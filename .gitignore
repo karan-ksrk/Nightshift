@@ -1,0 +1,24 @@
+# secrets / local config — see CLAUDE.md, config.example.json is the template
+config.json
+client_secret.json
+token.json
+
+# db + resumable upload state
+archive.db
+archive.db-journal
+archive.db-wal
+archive.db-shm
+
+# python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# stray duplicate sitting next to PLAN.md
+PLAN copy.md
+
+# editor/OS cruft
+.vscode/
+.idea/
+Thumbs.db

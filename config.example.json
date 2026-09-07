@@ -1,0 +1,25 @@
+{
+  "watch_folders": [
+    "C:/Users/you/Videos/ToArchive"
+  ],
+  "database": "archive.db",
+  "client_secret": "client_secret.json",
+  "token": "token.json",
+
+  "daily_byte_budget": 10737418240,
+  "daily_upload_budget": 100,
+
+  "enforce_window": true,
+  "window_start": "01:00",
+  "window_end": "06:30",
+  "window_overrun_grace_minutes": 90,
+
+  "max_bytes_per_sec": 2097152,
+  "chunk_size_bytes": 8388608,
+
+  "min_size_bytes": 1048576,
+  "category_id": 22,
+  "description_template": "Archived: {name}\nCaptured: {captured}\nSHA256: {sha}",
+
+  "delete_after_verify": false
+}
