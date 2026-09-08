@@ -79,7 +79,7 @@ them. Fatal on an unattended Pi. No verification needed — personal use under
 
 | File | Role |
 |---|---|
-| `main.py` | CLI: `auth`, `scan`, `run`, `verify`, `prune`, `status`. Window logic lives here. |
+| `main.py` | CLI: `auth`, `scan`, `run`, `verify`, `prune`, `status`, `reconcile`. Window logic lives here. |
 | `db.py` | Schema, state transitions, daily usage ledger, carry-debt. |
 | `selector.py` | Which files go today. Small and deliberate — read the docstring. |
 | `ytclient.py` | OAuth, resumable throttled upload, processing check. |
@@ -87,13 +87,19 @@ them. Fatal on an unattended Pi. No verification needed — personal use under
 
 ## Testing
 
-There is no test suite yet — **adding one is the first task in PLAN.md.** The
-logic was verified ad-hoc; port those checks into `pytest`. Priorities:
+`pytest` from the repo root. `tests/conftest.py` puts the root on `sys.path`;
+there is no package layout. What is covered:
 
-- selector: no-skip on non-fit, oversized file gets the day alone, count cap,
-  exhausted budget
-- window maths: wrapping past midnight, seconds remaining, window length
-- db: hash dedupe, path update, carry-debt arithmetic, manifest survives delete
+- `test_selector.py` — no-skip on non-fit, oversized file gets the day alone,
+  count cap, exhausted budget
+- `test_window.py` — wrapping past midnight, seconds remaining, window length
+- `test_db.py` — hash dedupe, path update, carry-debt, manifest survives
+  delete, the mtime rescan fast path, and the guarded ALTER migration
+- `test_ytclient.py` — the `pump` loop against a fake request: throttling,
+  progress deltas, resume URI, pause, and that every byte is billed exactly
+  once. `pump` had no tests at first and shipped two bugs; keep it covered.
+- `test_captured_at.py` — ffprobe parsing and every fallback to mtime
+- `test_reconcile.py` — missing-video reporting, and that it never mutates state
 
 Never test against the real YouTube API — mock `ytclient`. Quota is 100/day and
 uploads are irreversible.

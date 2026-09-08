@@ -6,6 +6,7 @@
   python main.py verify    poll processing state of uploaded videos
   python main.py prune     delete local files that are confirmed VERIFIED
   python main.py status    what is where
+  python main.py reconcile check every uploaded video still exists on YouTube
 
 Nothing is ever deleted unless it reached VERIFIED, and prune only runs at all
 when delete_after_verify is true in config.json. Leave it false until you have
@@ -394,6 +395,47 @@ def cmd_prune(cfg, conn, args):
         log.info("freed %.2f GB", freed / 1e9)
 
 
+# ---------------------------------------------------------------- reconcile
+
+def cmd_reconcile(cfg, conn, args, yt=None):
+    """Confirm every video we believe is on YouTube is still there.
+
+    Read-only by design. A DELETED row whose video has vanished is
+    unrecoverable -- the local copy is already gone -- and a VERIFIED row
+    that vanished may still have its file on disk. Which of those to act on
+    is a human's call, and the state machine is forward-only anyway, so
+    nothing here rewinds a row. It reports; you decide.
+    """
+    rows = [r for r in list(conn.in_state(VERIFIED)) + list(conn.in_state(DELETED))
+            if r["youtube_id"]]
+    if not rows:
+        log.info("reconcile: nothing uploaded yet, nothing to check")
+        return
+
+    yt = yt or ytclient.service(resolve(cfg, "client_secret"), resolve(cfg, "token"))
+    found = ytclient.existing_video_ids(yt, [r["youtube_id"] for r in rows])
+
+    gone_deleted = [r for r in rows
+                    if r["youtube_id"] not in found and r["state"] == DELETED]
+    gone_verified = [r for r in rows
+                     if r["youtube_id"] not in found and r["state"] == VERIFIED]
+
+    for r in gone_deleted:
+        # Worst case: nothing on YouTube, nothing on disk.
+        log.error("MISSING and local copy already deleted: id=%s %s hash=%s "
+                  "youtube_id=%s", r["id"], r["filename"], r["sha256"],
+                  r["youtube_id"])
+    for r in gone_verified:
+        on_disk = Path(r["path"]).exists()
+        log.error("MISSING from YouTube: id=%s %s youtube_id=%s "
+                  "(local copy %s)", r["id"], r["filename"], r["youtube_id"],
+                  "still on disk -- can be re-uploaded" if on_disk
+                  else "also gone from disk")
+
+    log.info("reconcile: %s checked, %s still on YouTube, %s missing",
+             len(rows), len(found), len(gone_deleted) + len(gone_verified))
+
+
 # ---------------------------------------------------------------- status
 
 def cmd_status(cfg, conn, args):
@@ -428,7 +470,8 @@ def cmd_auth(cfg, conn, args):
 # ---------------------------------------------------------------- cli
 
 COMMANDS = {"auth": cmd_auth, "scan": cmd_scan, "run": cmd_run,
-            "verify": cmd_verify, "prune": cmd_prune, "status": cmd_status}
+            "verify": cmd_verify, "prune": cmd_prune, "status": cmd_status,
+            "reconcile": cmd_reconcile}
 
 
 def main():

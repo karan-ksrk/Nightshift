@@ -26,7 +26,7 @@ throttled rate, verifies processing, optionally deletes.
 - [x] **`captured_at` from metadata** rather than mtime — `ffprobe`
       creation_time, fall back to mtime. Matters because FIFO ordering is by
       this field, and copying files destroys mtime.
-- [ ] **`reconcile` command**: for every row in VERIFIED/DELETED, confirm the
+- [x] **`reconcile` command**: for every row in VERIFIED/DELETED, confirm the
       YouTube ID still exists. Catches silent removals. Cheap — `videos.list`
       batches 50 IDs for 1 unit.
 

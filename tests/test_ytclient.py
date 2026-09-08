@@ -144,6 +144,52 @@ def test_should_stop_pauses_before_completing(monkeypatch):
     assert request.calls == 2  # stopped, did not drain the whole file
 
 
+class FakeVideosList:
+    """Mimics yt.videos().list(...).execute(), recording the id batches."""
+
+    def __init__(self, known_ids):
+        self.known = set(known_ids)
+        self.batches = []
+
+    def videos(self):
+        return self
+
+    def list(self, part, id):
+        self.batches.append(id.split(","))
+        return self
+
+    def execute(self):
+        asked = self.batches[-1]
+        return {"items": [{"id": v} for v in asked if v in self.known]}
+
+
+def test_existing_video_ids_reports_only_what_youtube_returns():
+    yt = FakeVideosList(known_ids={"a", "c"})
+
+    found = ytclient.existing_video_ids(yt, ["a", "b", "c"])
+
+    assert found == {"a", "c"}   # "b" is gone from the channel
+
+
+def test_existing_video_ids_batches_by_fifty():
+    """videos.list caps at 50 ids per call; 120 ids must be 3 calls, not 120
+    (and not one oversized call that YouTube would reject)."""
+    ids = [f"v{i}" for i in range(120)]
+    yt = FakeVideosList(known_ids=ids)
+
+    found = ytclient.existing_video_ids(yt, ids)
+
+    assert found == set(ids)
+    assert [len(b) for b in yt.batches] == [50, 50, 20]
+
+
+def test_existing_video_ids_empty_input_makes_no_calls():
+    yt = FakeVideosList(known_ids=set())
+
+    assert ytclient.existing_video_ids(yt, []) == set()
+    assert yt.batches == []
+
+
 def test_throttle_sleeps_by_chunksize_over_rate(monkeypatch):
     """Pacing is chunk_size / max_bytes_per_sec per chunk."""
     slept = []

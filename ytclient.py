@@ -149,6 +149,22 @@ def processing_state(yt, video_id):
     )
 
 
+def existing_video_ids(yt, video_ids):
+    """Which of these IDs YouTube still returns.
+
+    videos.list takes up to 50 ids per call for 1 unit from the shared pool,
+    so checking a whole archive costs single-digit units. Anything absent
+    from the response no longer exists on the channel.
+    """
+    ids = list(video_ids)
+    found = set()
+    for i in range(0, len(ids), 50):
+        resp = yt.videos().list(part="id", id=",".join(ids[i:i + 50])).execute()
+        for item in resp.get("items", []):
+            found.add(item["id"])
+    return found
+
+
 def is_retriable(exc):
     if isinstance(exc, googleapiclient.errors.HttpError):
         return exc.resp.status in RETRIABLE_STATUS
