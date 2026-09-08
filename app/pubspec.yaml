@@ -40,6 +40,8 @@ dependencies:
   shared_preferences: ^2.3.3       # host/port -- not secret
   flutter_secure_storage: ^9.2.2   # server token -- is a secret
   provider: ^6.1.2                 # sharing upload/status state across screens
+  sqflite: ^2.4.1                  # local uploads mirror -- hand-written SQL, no ORM
+  path: ^1.9.0                     # join() for the db file path
 
 dev_dependencies:
   flutter_test:
@@ -51,6 +53,11 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+
+  # Host-machine unit tests for UploadsDao without a device/emulator --
+  # provides a databaseFactory that runs SQLite natively instead of over a
+  # platform channel.
+  sqflite_common_ffi: ^2.3.4
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

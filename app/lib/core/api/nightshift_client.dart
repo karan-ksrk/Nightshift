@@ -43,7 +43,7 @@ class NightshiftClient {
     int offset = 0,
   }) async {
     final resp = await _get('/files', queryParameters: {
-      if (state != null) 'state': state,
+      'state': ?state,
       'limit': limit,
       'offset': offset,
     });
