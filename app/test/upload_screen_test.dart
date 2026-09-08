@@ -31,7 +31,24 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'package:nightshift_app/core/db/uploads_dao.dart';
+import 'package:nightshift_app/core/delete/media_delete_channel.dart';
 import 'package:nightshift_app/screens/upload/upload_screen.dart';
+
+/// Overrides the real platform channel call -- never touches
+/// MethodChannel('nightshift/delete'), so no native mock/binding is needed.
+class FakeMediaDeleteChannel extends MediaDeleteChannel {
+  FakeMediaDeleteChannel(this.result);
+  final bool result;
+  int calls = 0;
+  String? lastUri;
+
+  @override
+  Future<bool> delete(String uri) async {
+    calls++;
+    lastUri = uri;
+    return result;
+  }
+}
 
 void main() {
   setUpAll(() {
@@ -74,5 +91,80 @@ void main() {
     expect(find.text('No files picked yet.'), findsNothing);
     expect(find.textContaining('a.mp4'), findsOneWidget);
     expect(find.textContaining('Ready'), findsOneWidget);
+  });
+
+  testWidgets(
+      'M6: deleting a CONFIRMED row prompts, then calls the channel and marks DELETED_LOCAL',
+      (tester) async {
+    final dao = UploadsDao(pathOverride: inMemoryDatabasePath);
+    addTearDown(dao.close);
+    final deleteChannel = FakeMediaDeleteChannel(true);
+
+    await tester.runAsync(() async {
+      final id = await dao.insertPending(
+        localUri: 'content://com.android.providers.media.documents/document/video:123',
+        localPath: '/sdcard/a.mp4',
+        filename: 'a.mp4',
+        sizeBytes: 12345,
+      );
+      await dao.setHashComputed(id, 'a' * 64);
+      await dao.setConfirmed(id, serverFileId: 1, serverState: 'QUEUED');
+
+      await tester.pumpWidget(MaterialApp(
+        home: UploadScreen(dao: dao, mediaDeleteChannel: deleteChannel),
+      ));
+      await Future.delayed(const Duration(milliseconds: 100));
+      await tester.pump();
+
+      // Confirmed row shows the delete button, not a retry button.
+      await tester.tap(find.byTooltip('Delete from phone'));
+      await tester.pump();
+
+      // Confirmation dialog appears first -- must not delete without it.
+      expect(find.text('Delete from phone?'), findsOneWidget);
+      expect(deleteChannel.calls, 0);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+      await Future.delayed(const Duration(milliseconds: 100));
+      await tester.pump();
+    });
+
+    expect(deleteChannel.calls, 1);
+    expect(deleteChannel.lastUri,
+        'content://com.android.providers.media.documents/document/video:123');
+    expect(find.textContaining('Deleted from phone'), findsOneWidget);
+  });
+
+  testWidgets('M6: declining the confirmation dialog never calls the channel',
+      (tester) async {
+    final dao = UploadsDao(pathOverride: inMemoryDatabasePath);
+    addTearDown(dao.close);
+    final deleteChannel = FakeMediaDeleteChannel(true);
+
+    await tester.runAsync(() async {
+      final id = await dao.insertPending(
+        localUri: 'content://media/a.mp4',
+        localPath: '/sdcard/a.mp4',
+        filename: 'a.mp4',
+        sizeBytes: 12345,
+      );
+      await dao.setHashComputed(id, 'a' * 64);
+      await dao.setConfirmed(id, serverFileId: 1, serverState: 'QUEUED');
+
+      await tester.pumpWidget(MaterialApp(
+        home: UploadScreen(dao: dao, mediaDeleteChannel: deleteChannel),
+      ));
+      await Future.delayed(const Duration(milliseconds: 100));
+      await tester.pump();
+
+      await tester.tap(find.byTooltip('Delete from phone'));
+      await tester.pump();
+      await tester.tap(find.text('Cancel'));
+      await Future.delayed(const Duration(milliseconds: 100));
+      await tester.pump();
+    });
+
+    expect(deleteChannel.calls, 0);
+    expect(find.textContaining('Confirmed'), findsOneWidget);
   });
 }

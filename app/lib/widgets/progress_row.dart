@@ -6,7 +6,18 @@ class ProgressRow extends StatelessWidget {
   final LocalUpload row;
   final VoidCallback onRetry;
 
-  const ProgressRow({super.key, required this.row, required this.onRetry});
+  /// Only ever invoked when [row.state] is CONFIRMED -- the delete button
+  /// isn't shown otherwise. See the plan: unlock condition is CONFIRMED
+  /// (either /complete or an /init 409 duplicate), not the Pi's own
+  /// VERIFIED (YouTube-processing) stage.
+  final VoidCallback onDelete;
+
+  const ProgressRow({
+    super.key,
+    required this.row,
+    required this.onRetry,
+    required this.onDelete,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -42,8 +53,20 @@ class ProgressRow extends StatelessWidget {
       trailing: canRetry
           ? IconButton(icon: const Icon(Icons.refresh), onPressed: onRetry)
           : row.isConfirmed
-              ? const Icon(Icons.check_circle, color: Colors.green)
-              : null,
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.check_circle, color: Colors.green),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      tooltip: 'Delete from phone',
+                      onPressed: onDelete,
+                    ),
+                  ],
+                )
+              : row.state == LocalUploadState.deletedLocal
+                  ? const Icon(Icons.delete_forever, color: Colors.grey)
+                  : null,
     );
   }
 

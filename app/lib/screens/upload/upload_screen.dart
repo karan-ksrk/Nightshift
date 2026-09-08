@@ -1,10 +1,12 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show PlatformException;
 
 import '../../core/api/nightshift_client.dart';
 import '../../core/config/settings_store.dart';
 import '../../core/config/token_store.dart';
 import '../../core/db/uploads_dao.dart';
+import '../../core/delete/media_delete_channel.dart';
 import '../../core/upload/upload_engine.dart';
 import '../../models/local_upload.dart';
 import '../../widgets/progress_row.dart';
@@ -19,15 +21,18 @@ class UploadScreen extends StatefulWidget {
   final UploadsDao dao;
   final SettingsStore settingsStore;
   final TokenStore tokenStore;
+  final MediaDeleteChannel mediaDeleteChannel;
 
   UploadScreen({
     super.key,
     UploadsDao? dao,
     SettingsStore? settingsStore,
     TokenStore? tokenStore,
+    MediaDeleteChannel? mediaDeleteChannel,
   })  : dao = dao ?? UploadsDao(),
         settingsStore = settingsStore ?? SettingsStore(),
-        tokenStore = tokenStore ?? TokenStore();
+        tokenStore = tokenStore ?? TokenStore(),
+        mediaDeleteChannel = mediaDeleteChannel ?? MediaDeleteChannel();
 
   @override
   State<UploadScreen> createState() => _UploadScreenState();
@@ -37,6 +42,7 @@ class _UploadScreenState extends State<UploadScreen> {
   UploadsDao get _dao => widget.dao;
   SettingsStore get _settingsStore => widget.settingsStore;
   TokenStore get _tokenStore => widget.tokenStore;
+  MediaDeleteChannel get _mediaDeleteChannel => widget.mediaDeleteChannel;
 
   // In-memory mirror of the DB, keyed by id, so the UI updates live without
   // re-querying on every progress tick. The DAO stays the source of truth
@@ -161,6 +167,60 @@ class _UploadScreenState extends State<UploadScreen> {
 
   Future<void> _retry(int id) => _processQueue([id]);
 
+  /// Unlock condition is CONFIRMED (either /complete or an /init 409
+  /// duplicate) -- ProgressRow only ever wires this to a visible button for
+  /// rows in that state, not the Pi's own VERIFIED stage. Confirmation
+  /// dialog first, per the plan, since this is an irreversible on-device
+  /// action even though the content is safely archived either way.
+  Future<void> _delete(LocalUpload row) async {
+    if (row.id == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete from phone?'),
+        content: Text(
+          '${row.filename}\n\n'
+          'This only removes it from your phone -- already confirmed on the Pi.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      final removed = await _mediaDeleteChannel.delete(row.localUri);
+      if (removed) {
+        await _dao.setDeletedLocal(row.id!);
+        final updated = await _dao.findById(row.id!);
+        if (updated != null && mounted) setState(() => _rows[row.id!] = updated);
+      } else if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Not deleted.')));
+      }
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      final message = e.code == 'permission_denied'
+          ? "Can't delete automatically -- permission expired. Remove it "
+              'manually from your Files app.'
+          : 'Delete failed: ${e.message}';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final rows = _rows.values.toList()
@@ -187,6 +247,7 @@ class _UploadScreenState extends State<UploadScreen> {
                 return ProgressRow(
                   row: row,
                   onRetry: () => _retry(row.id!),
+                  onDelete: () => _delete(row),
                 );
               },
             ),
