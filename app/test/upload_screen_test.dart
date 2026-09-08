@@ -33,6 +33,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:nightshift_app/core/db/uploads_dao.dart';
 import 'package:nightshift_app/core/delete/media_delete_channel.dart';
 import 'package:nightshift_app/screens/upload/upload_screen.dart';
+import 'package:nightshift_app/theme/app_theme.dart';
 
 /// Overrides the real platform channel call -- never touches
 /// MethodChannel('nightshift/delete'), so no native mock/binding is needed.
@@ -61,13 +62,16 @@ void main() {
     addTearDown(dao.close);
 
     await tester.runAsync(() async {
-      await tester.pumpWidget(MaterialApp(home: UploadScreen(dao: dao)));
+      await tester.pumpWidget(MaterialApp(
+        theme: AppTheme.dark,
+        home: UploadScreen(dao: dao),
+      ));
       await Future.delayed(const Duration(milliseconds: 100));
       await tester.pump();
     });
 
-    expect(find.text('No files picked yet.'), findsOneWidget);
-    expect(find.text('Pick videos'), findsOneWidget);
+    expect(find.text('NO BATCH LOADED'), findsOneWidget);
+    expect(find.text('PICK VIDEOS'), findsOneWidget);
   });
 
   testWidgets('Upload screen loads existing rows from the DAO on start', (tester) async {
@@ -83,14 +87,17 @@ void main() {
       );
       await dao.setHashComputed(id, 'a' * 64);
 
-      await tester.pumpWidget(MaterialApp(home: UploadScreen(dao: dao)));
+      await tester.pumpWidget(MaterialApp(
+        theme: AppTheme.dark,
+        home: UploadScreen(dao: dao),
+      ));
       await Future.delayed(const Duration(milliseconds: 100));
       await tester.pump();
     });
 
-    expect(find.text('No files picked yet.'), findsNothing);
+    expect(find.text('NO BATCH LOADED'), findsNothing);
     expect(find.textContaining('a.mp4'), findsOneWidget);
-    expect(find.textContaining('Ready'), findsOneWidget);
+    expect(find.textContaining('READY'), findsOneWidget);
   });
 
   testWidgets(
@@ -111,13 +118,14 @@ void main() {
       await dao.setConfirmed(id, serverFileId: 1, serverState: 'QUEUED');
 
       await tester.pumpWidget(MaterialApp(
+        theme: AppTheme.dark,
         home: UploadScreen(dao: dao, mediaDeleteChannel: deleteChannel),
       ));
       await Future.delayed(const Duration(milliseconds: 100));
       await tester.pump();
 
       // Confirmed row shows the delete button, not a retry button.
-      await tester.tap(find.byTooltip('Delete from phone'));
+      await tester.tap(find.text('DELETE'));
       await tester.pump();
 
       // Confirmation dialog appears first -- must not delete without it.
@@ -132,7 +140,7 @@ void main() {
     expect(deleteChannel.calls, 1);
     expect(deleteChannel.lastUri,
         'content://com.android.providers.media.documents/document/video:123');
-    expect(find.textContaining('Deleted from phone'), findsOneWidget);
+    expect(find.textContaining('DELETED'), findsOneWidget);
   });
 
   testWidgets('M6: declining the confirmation dialog never calls the channel',
@@ -152,12 +160,13 @@ void main() {
       await dao.setConfirmed(id, serverFileId: 1, serverState: 'QUEUED');
 
       await tester.pumpWidget(MaterialApp(
+        theme: AppTheme.dark,
         home: UploadScreen(dao: dao, mediaDeleteChannel: deleteChannel),
       ));
       await Future.delayed(const Duration(milliseconds: 100));
       await tester.pump();
 
-      await tester.tap(find.byTooltip('Delete from phone'));
+      await tester.tap(find.text('DELETE'));
       await tester.pump();
       await tester.tap(find.text('Cancel'));
       await Future.delayed(const Duration(milliseconds: 100));
@@ -165,6 +174,6 @@ void main() {
     });
 
     expect(deleteChannel.calls, 0);
-    expect(find.textContaining('Confirmed'), findsOneWidget);
+    expect(find.textContaining('CONFIRMED'), findsOneWidget);
   });
 }

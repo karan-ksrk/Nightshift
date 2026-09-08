@@ -12,6 +12,7 @@ import 'package:nightshift_app/core/api/nightshift_client.dart';
 import 'package:nightshift_app/core/db/uploads_dao.dart';
 import 'package:nightshift_app/models/local_upload.dart';
 import 'package:nightshift_app/screens/status/status_screen.dart';
+import 'package:nightshift_app/theme/app_theme.dart';
 
 class FakeNightshiftClient extends NightshiftClient {
   FakeNightshiftClient() : super(host: 'unused', port: 0, token: 'unused');
@@ -60,14 +61,23 @@ void main() {
       };
 
     await tester.runAsync(() async {
-      await tester.pumpWidget(MaterialApp(home: StatusScreen(dao: dao, client: client)));
+      await tester.pumpWidget(MaterialApp(
+        theme: AppTheme.dark,
+        home: StatusScreen(dao: dao, client: client),
+      ));
       await Future.delayed(const Duration(milliseconds: 100));
       await tester.pump();
     });
 
-    expect(find.textContaining('Uploads: 3 / 100'), findsOneWidget);
-    expect(find.textContaining('QUEUED: 3 file(s)'), findsOneWidget);
-    expect(find.text('No files picked yet.'), findsOneWidget);
+    // Quota gauges render label and value separately now.
+    expect(find.text('UPLOADS'), findsOneWidget);
+    expect(find.text('3 / 100'), findsOneWidget);
+    // The archive ledger lists the state with its own counts column.
+    expect(find.text('QUEUED'), findsOneWidget);
+    expect(find.text('TOTAL'), findsOneWidget);
+    // Nothing uploaded from this phone yet, so that section is absent
+    // entirely rather than showing an empty-list placeholder.
+    expect(find.textContaining('FROM THIS PHONE'), findsNothing);
   });
 
   testWidgets('Status screen merges server_state onto local rows by sha256 on refresh',
@@ -97,14 +107,17 @@ void main() {
       await dao.setHashComputed(id, 'a' * 64);
       await dao.setConfirmed(id, serverFileId: 5, serverState: 'QUEUED');
 
-      await tester.pumpWidget(MaterialApp(home: StatusScreen(dao: dao, client: client)));
+      await tester.pumpWidget(MaterialApp(
+        theme: AppTheme.dark,
+        home: StatusScreen(dao: dao, client: client),
+      ));
       await Future.delayed(const Duration(milliseconds: 100));
       await tester.pump();
 
       row = await dao.findById(id);
     });
 
-    expect(find.textContaining('Pi: VERIFIED'), findsOneWidget);
+    expect(find.textContaining('PI: VERIFIED'), findsOneWidget);
     expect(row!.serverState, 'VERIFIED'); // persisted, not just rendered
   });
 }

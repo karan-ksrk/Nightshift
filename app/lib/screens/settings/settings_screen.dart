@@ -4,6 +4,7 @@ import '../../core/api/api_exceptions.dart';
 import '../../core/api/nightshift_client.dart';
 import '../../core/config/settings_store.dart';
 import '../../core/config/token_store.dart';
+import '../../theme/app_theme.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -37,6 +38,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final host = await _settingsStore.getHost();
     final port = await _settingsStore.getPort();
     final token = await _tokenStore.getToken();
+    if (!mounted) return;
     setState(() {
       if (host != null) _hostController.text = host;
       if (port != null) _portController.text = port.toString();
@@ -77,11 +79,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     try {
       final status = await client.status();
-      final queued = status['counts']?['QUEUED']?['files'] ?? 0;
+      final counts = (status['counts'] as Map<String, dynamic>?) ?? {};
+      var files = 0;
+      for (final v in counts.values) {
+        files += ((v['files'] as num?) ?? 0).toInt();
+      }
       if (!mounted) return;
       setState(() {
         _testState = _TestState.success;
-        _testMessage = 'Connected. $queued file(s) queued on the Pi.';
+        _testMessage = 'CONNECTED · $files FILES ARCHIVED';
       });
     } on NightshiftApiException catch (e) {
       if (!mounted) return;
@@ -117,6 +123,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  void _dirty() => setState(() {
+        _saved = false;
+        _testState = _TestState.idle;
+      });
+
   @override
   void dispose() {
     _hostController.dispose();
@@ -127,107 +138,193 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final ns = context.ns;
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Server settings')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: ListView(
-          children: [
-            TextField(
-              controller: _hostController,
-              decoration: const InputDecoration(
-                labelText: 'Host',
-                hintText: '100.92.47.48 or 192.168.1.23',
-                border: OutlineInputBorder(),
-              ),
-              onChanged: (_) => setState(() {
-                _saved = false;
-                _testState = _TestState.idle;
-              }),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _portController,
-              decoration: const InputDecoration(
-                labelText: 'Port',
-                border: OutlineInputBorder(),
-              ),
-              keyboardType: TextInputType.number,
-              onChanged: (_) => setState(() {
-                _saved = false;
-                _testState = _TestState.idle;
-              }),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _tokenController,
-              decoration: const InputDecoration(
-                labelText: 'X-Nightshift-Token',
-                border: OutlineInputBorder(),
-              ),
-              obscureText: true,
-              onChanged: (_) => setState(() {
-                _saved = false;
-                _testState = _TestState.idle;
-              }),
-            ),
-            const SizedBox(height: 20),
-            Row(
+      appBar: AppBar(title: const Text('SERVER')),
+      body: Column(
+        children: [
+          if (_testMessage != null) _ConnBanner(
+            state: _testState,
+            message: _testMessage!,
+          ),
+          Expanded(
+            child: ListView(
+              padding: EdgeInsets.zero,
               children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: _testState == _TestState.testing
-                        ? null
-                        : _testConnection,
-                    child: _testState == _TestState.testing
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Text('Test connection'),
-                  ),
+                _Field(
+                  label: 'HOST',
+                  controller: _hostController,
+                  hint: '192.168.1.23',
+                  onChanged: _dirty,
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton(
-                    onPressed: _fieldsLookValid ? _save : null,
-                    child: Text(_saved ? 'Saved' : 'Save'),
+                _Field(
+                  label: 'PORT',
+                  controller: _portController,
+                  hint: '8000',
+                  keyboardType: TextInputType.number,
+                  onChanged: _dirty,
+                ),
+                _Field(
+                  label: 'X-NIGHTSHIFT-TOKEN',
+                  controller: _tokenController,
+                  obscure: true,
+                  onChanged: _dirty,
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 16, 14, 0),
+                  child: Text(
+                    'Chunk size is fixed at 8 MiB. Uploads run one file at a '
+                    'time, only while this app is open.',
+                    style: TextStyle(fontSize: 12.5, color: ns.faint),
                   ),
                 ),
               ],
             ),
-            if (_testMessage != null) ...[
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: _testState == _TestState.success
-                      ? Colors.green.withValues(alpha: 0.15)
-                      : Colors.red.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(8),
+          ),
+          Container(
+            padding: const EdgeInsets.fromLTRB(14, 11, 14, 11),
+            decoration: BoxDecoration(
+              color: ns.surface,
+              border: Border(top: BorderSide(color: ns.rule)),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed:
+                        _testState == _TestState.testing ? null : _testConnection,
+                    child: _testState == _TestState.testing
+                        ? SizedBox(
+                            width: 13,
+                            height: 13,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: ns.soft,
+                            ),
+                          )
+                        : const Text('TEST'),
+                  ),
                 ),
-                child: Row(
-                  children: [
-                    Icon(
-                      _testState == _TestState.success
-                          ? Icons.check_circle
-                          : Icons.error,
-                      color: _testState == _TestState.success
-                          ? Colors.green
-                          : Colors.red,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(_testMessage!)),
-                  ],
+                const SizedBox(width: 10),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: _fieldsLookValid ? _save : null,
+                    child: Text(_saved ? 'SAVED' : 'SAVE'),
+                  ),
                 ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Field extends StatelessWidget {
+  final String label;
+  final TextEditingController controller;
+  final String? hint;
+  final bool obscure;
+  final TextInputType? keyboardType;
+  final VoidCallback onChanged;
+
+  const _Field({
+    required this.label,
+    required this.controller,
+    required this.onChanged,
+    this.hint,
+    this.obscure = false,
+    this.keyboardType,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ns = context.ns;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: ns.rule)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: NsType.label(context)),
+          TextField(
+            controller: controller,
+            obscureText: obscure,
+            keyboardType: keyboardType,
+            onChanged: (_) => onChanged(),
+            style: TextStyle(
+              fontFamily: NsType.mono,
+              fontSize: 14,
+              color: ns.ink,
+            ),
+            decoration: InputDecoration(
+              hintText: hint,
+              hintStyle: TextStyle(
+                fontFamily: NsType.mono,
+                fontSize: 14,
+                color: ns.faint,
               ),
-            ],
-          ],
-        ),
+              filled: false,
+              isDense: true,
+              contentPadding: const EdgeInsets.only(top: 6, bottom: 2),
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Connection state as a readout line rather than a coloured card -- it
+/// reports a fact about the link, so it reads like the rest of the
+/// instrumentation.
+class _ConnBanner extends StatelessWidget {
+  final _TestState state;
+  final String message;
+  const _ConnBanner({required this.state, required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final ns = context.ns;
+    final ok = state == _TestState.success;
+    final color = ok ? ns.stateGood : ns.stateBad;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 11, 14, 11),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        border: Border(bottom: BorderSide(color: ns.rule)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            margin: const EdgeInsets.only(top: 4),
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(
+              message,
+              style: ok
+                  ? NsType.data(context, size: 10.5, color: color)
+                  : TextStyle(fontSize: 12.5, color: ns.ink, height: 1.4),
+            ),
+          ),
+        ],
       ),
     );
   }

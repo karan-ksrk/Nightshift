@@ -9,6 +9,9 @@ import '../../core/db/uploads_dao.dart';
 import '../../core/delete/media_delete_channel.dart';
 import '../../core/upload/upload_engine.dart';
 import '../../models/local_upload.dart';
+import '../../theme/app_theme.dart';
+import '../../widgets/batch_header.dart';
+import '../../widgets/filename_text.dart';
 import '../../widgets/progress_row.dart';
 import '../settings/settings_screen.dart';
 
@@ -270,41 +273,227 @@ class _UploadScreenState extends State<UploadScreen> {
     if (mounted) setState(() => _rows.remove(row.id));
   }
 
+  /// Deletes every CONFIRMED row in one pass, behind a single confirmation.
+  /// After a ten-file batch, tapping Delete ten times and confirming ten
+  /// times is the actual experience -- this collapses it to one of each.
+  /// Each file still goes through the same per-file channel call, so a
+  /// stale-grant failure on one doesn't stop the rest.
+  Future<void> _deleteAllConfirmed() async {
+    final targets = _rows.values
+        .where((r) => r.state == LocalUploadState.confirmed && r.id != null)
+        .toList();
+    if (targets.isEmpty) return;
+
+    final totalBytes = targets.fold<int>(0, (sum, r) => sum + r.sizeBytes);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Delete ${targets.length} files from phone?'),
+        content: Text(
+          '${BatchHeader.formatBytes(totalBytes)} '
+          '${BatchHeader.unitFor(totalBytes)}. The Pi holds a byte-identical '
+          'copy of each -- hash verified. This only removes them from your '
+          'phone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    var removed = 0, failed = 0;
+    for (final row in targets) {
+      try {
+        if (await _mediaDeleteChannel.delete(row.localUri)) {
+          await _dao.setDeletedLocal(row.id!);
+          final updated = await _dao.findById(row.id!);
+          if (updated != null && mounted) {
+            setState(() => _rows[row.id!] = updated);
+          }
+          removed++;
+        } else {
+          failed++;
+        }
+      } catch (_) {
+        // Most likely a pick whose access grant expired -- reported in the
+        // summary rather than aborting the remaining files.
+        failed++;
+      }
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(failed == 0
+          ? 'Deleted $removed files from phone.'
+          : 'Deleted $removed. $failed could not be removed '
+              '(access grant expired) -- delete those in Files.'),
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
+    final ns = context.ns;
     final rows = _rows.values.toList()
       ..sort((a, b) => a.addedAt.compareTo(b.addedAt));
+    final busy = _picking || _processing;
+    final confirmedCount =
+        rows.where((r) => r.state == LocalUploadState.confirmed).length;
+
+    // Computed from what's on screen, so it adapts to whatever was picked
+    // rather than assuming a naming scheme -- see FilenameText.
+    final prefixes =
+        FilenameText.sharedPrefixes(rows.map((r) => r.filename));
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Nightshift'),
+        title: const Text('NIGHTSHIFT'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.settings),
+            icon: Icon(Icons.settings_outlined, size: 20, color: ns.faint),
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const SettingsScreen()),
             ),
           ),
         ],
       ),
-      body: rows.isEmpty
-          ? const Center(child: Text('No files picked yet.'))
-          : ListView.builder(
-              itemCount: rows.length,
-              itemBuilder: (context, i) {
-                final row = rows[i];
-                return ProgressRow(
-                  row: row,
-                  onRetry: () => _retry(row.id!),
-                  onDelete: () => _delete(row),
-                  onHide: () => _hide(row),
-                );
-              },
+      body: Column(
+        children: [
+          if (rows.isNotEmpty)
+            BatchHeader(summary: BatchSummary.from(rows), rows: rows),
+          Expanded(
+            child: rows.isEmpty
+                ? const _EmptyState()
+                : ListView.builder(
+                    padding: EdgeInsets.zero,
+                    itemCount: rows.length,
+                    itemBuilder: (context, i) {
+                      final row = rows[i];
+                      return ProgressRow(
+                        row: row,
+                        sharedPrefix: prefixes[row.filename] ?? '',
+                        onRetry: () => _retry(row.id!),
+                        onDelete: () => _delete(row),
+                        onHide: () => _hide(row),
+                      );
+                    },
+                  ),
+          ),
+          _Dock(
+            busy: busy,
+            processing: _processing,
+            confirmedCount: confirmedCount,
+            onPick: _pickFiles,
+            onDeleteAll: _deleteAllConfirmed,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Docked rather than floating. A FAB over a scrolling list eventually lands
+/// on top of something -- it was sitting on the last row's progress bar --
+/// and the space beside a docked bar is free to carry the two facts worth
+/// knowing while a transfer runs.
+class _Dock extends StatelessWidget {
+  final bool busy;
+  final bool processing;
+  final int confirmedCount;
+  final VoidCallback onPick;
+  final VoidCallback onDeleteAll;
+
+  const _Dock({
+    required this.busy,
+    required this.processing,
+    required this.confirmedCount,
+    required this.onPick,
+    required this.onDeleteAll,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ns = context.ns;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 11, 14, 11),
+      decoration: BoxDecoration(
+        color: ns.surface,
+        border: Border(top: BorderSide(color: ns.rule)),
+      ),
+      child: Row(
+        children: [
+          if (confirmedCount > 0 && !processing) ...[
+            OutlinedButton(
+              onPressed: busy ? null : onPick,
+              child: const Text('PICK'),
             ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: (_picking || _processing) ? null : _pickFiles,
-        icon: const Icon(Icons.video_library),
-        label: Text(_processing ? 'Uploading…' : 'Pick videos'),
+            const SizedBox(width: 8),
+            Expanded(
+              child: FilledButton(
+                onPressed: onDeleteAll,
+                child: Text('DELETE ALL $confirmedCount'),
+              ),
+            ),
+          ] else ...[
+            FilledButton(
+              onPressed: busy ? null : onPick,
+              child: Text(processing ? 'WORKING…' : 'PICK VIDEOS'),
+            ),
+            const Spacer(),
+            Text(
+              processing ? 'ONE AT A TIME\n8 MiB CHUNKS' : 'SENDS OVER WIFI\nTO THE PI',
+              textAlign: TextAlign.right,
+              style: NsType.label(context),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// An empty screen is a chance to answer the questions you actually have
+/// when opening the app with nothing queued, rather than a shrug.
+class _EmptyState extends StatelessWidget {
+  const _EmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    final ns = context.ns;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('▪ ▪ ▪',
+                style: NsType.data(context, size: 15, color: ns.faint)),
+            const SizedBox(height: 14),
+            Text(
+              'NO BATCH LOADED',
+              style: TextStyle(
+                fontFamily: NsType.mono,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 2,
+                color: ns.ink,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Pick videos to start sending them to the Pi.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13, color: ns.soft),
+            ),
+          ],
+        ),
       ),
     );
   }

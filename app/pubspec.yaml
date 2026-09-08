@@ -84,6 +84,20 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  # IBM Plex Mono carries every number, state label and filename in the UI.
+  # Bundled as an asset rather than pulled in via google_fonts: one less
+  # dependency, no network fetch at runtime, and the app is offline-first
+  # by nature (it talks to a Pi on the LAN). Monospace everywhere digits
+  # appear is what makes filenames and byte counts line up in columns --
+  # see FilenameText for why that matters with these filenames.
+  fonts:
+    - family: PlexMono
+      fonts:
+        - asset: assets/fonts/IBMPlexMono-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/IBMPlexMono-SemiBold.ttf
+          weight: 600
+
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg
