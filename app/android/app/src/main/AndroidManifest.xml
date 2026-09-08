@@ -1,4 +1,19 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Must live HERE, in the main manifest, not only in src/debug and
+         src/profile where Flutter's project template puts it "for
+         development". Those two apply to debug and profile builds only, so
+         a release APK ships with no network access whatsoever, and every
+         request then fails as unreachable, which from the user's side is
+         indistinguishable from the Pi being down or the host being wrong.
+         Talking to the Pi over HTTP is this app's entire job.
+
+         Cleartext (plain http, no TLS) needs no declaration here.
+         android:usesCleartextTraffic and the network security config only
+         govern Android's own HTTP stacks; dio runs on dart:io's
+         HttpClient, which does its own socket work and isn't subject to
+         either. INTERNET is different: the kernel enforces it as a group
+         membership, so it binds dart:io too. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="nightshift_app"
         android:name="${applicationName}"
