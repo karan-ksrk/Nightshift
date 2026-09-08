@@ -5,6 +5,7 @@
   "database": "archive.db",
   "client_secret": "client_secret.json",
   "token": "token.json",
+  "log_file": "nightshift.log",
 
   "daily_byte_budget": 10737418240,
   "daily_upload_budget": 100,

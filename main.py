@@ -10,13 +10,20 @@
 Nothing is ever deleted unless it reached VERIFIED, and prune only runs at all
 when delete_after_verify is true in config.json. Leave it false until you have
 watched the pipeline work end to end.
+
+  --limit N   on `run`, cap files attempted this run (e.g. --limit 3 for a
+              first real run you want to watch closely)
 """
 
 import argparse
 import hashlib
 import json
+import logging
+import shutil
+import subprocess
 import sys
 from datetime import datetime, time as dtime, timedelta
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import db as dbmod
@@ -28,6 +35,8 @@ from db import (Db, DELETED, FAILED, PROCESSING, QUEUED, UPLOADING, VERIFIED,
 HERE = Path(__file__).parent
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".mts", ".m2ts", ".wmv",
               ".flv", ".webm", ".3gp", ".mpg", ".mpeg"}
+
+log = logging.getLogger("nightshift.main")
 
 
 # ---------------------------------------------------------------- config
@@ -41,10 +50,35 @@ def load_config(path=None):
     return cfg
 
 
-def resolve(cfg, key):
+def resolve(cfg, key, default=None):
     """Config paths are relative to the config file unless absolute."""
-    p = Path(cfg[key]).expanduser()
+    p = Path(cfg.get(key, default) if default is not None else cfg[key]).expanduser()
     return p if p.is_absolute() else (cfg["_dir"] / p)
+
+
+# ---------------------------------------------------------------- logging
+
+def setup_logging(cfg):
+    """Rotating file handler so the Pi has a record when a file vanishes
+    unattended, plus a console handler so interactive runs still see output.
+    db.py logs every state transition with file id, hash, and bytes; this
+    just wires up where those lines (and the pipeline's own) end up."""
+    log_path = resolve(cfg, "log_file", default="nightshift.log")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    file_handler = RotatingFileHandler(
+        log_path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter("%(message)s"))
+
+    root = logging.getLogger("nightshift")
+    root.setLevel(logging.INFO)
+    root.addHandler(file_handler)
+    root.addHandler(console_handler)
+    return root
 
 
 # ---------------------------------------------------------------- window
@@ -86,6 +120,51 @@ def sha256_file(path, buf=4 * 1024 * 1024):
     return h.hexdigest()
 
 
+_ffprobe_available = None
+
+
+def _have_ffprobe():
+    global _ffprobe_available
+    if _ffprobe_available is None:
+        _ffprobe_available = shutil.which("ffprobe") is not None
+        if not _ffprobe_available:
+            log.info("ffprobe not on PATH; captured_at will fall back to file mtime")
+    return _ffprobe_available
+
+
+def captured_at_for(path):
+    """When the video was actually shot, not when this copy of the file was
+    made. FIFO order in selector.py depends on this being right, and
+    copying a file (phone sync, drive transfer) destroys mtime -- so prefer
+    the container's own creation_time tag via ffprobe, falling back to mtime
+    only when ffprobe is missing, the tag is absent, or it fails to parse."""
+    if _have_ffprobe():
+        try:
+            out = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-print_format", "json",
+                 "-show_entries",
+                 "format_tags=creation_time:stream_tags=creation_time",
+                 str(path)],
+                capture_output=True, text=True, timeout=10, check=True,
+            )
+            data = json.loads(out.stdout)
+            raw = data.get("format", {}).get("tags", {}).get("creation_time")
+            if not raw:
+                for stream in data.get("streams", []):
+                    raw = stream.get("tags", {}).get("creation_time")
+                    if raw:
+                        break
+            if raw:
+                # ffprobe reports UTC, e.g. "2026-01-01T12:34:56.000000Z".
+                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                return dt.astimezone().isoformat(timespec="seconds")
+        except (subprocess.SubprocessError, json.JSONDecodeError,
+                ValueError, OSError) as exc:
+            log.debug("ffprobe creation_time lookup failed for %s: %s", path, exc)
+
+    return datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+
+
 def cmd_scan(cfg, conn, args):
     folders = [Path(f).expanduser() for f in cfg["watch_folders"]]
     min_size = cfg.get("min_size_bytes", 1024 * 1024)
@@ -93,7 +172,7 @@ def cmd_scan(cfg, conn, args):
 
     for folder in folders:
         if not folder.exists():
-            print(f"  ! missing folder {folder}")
+            log.warning("missing watch folder %s", folder)
             continue
         for p in sorted(folder.rglob("*")):
             if not p.is_file() or p.suffix.lower() not in VIDEO_EXTS:
@@ -114,13 +193,11 @@ def cmd_scan(cfg, conn, args):
                 skipped += 1
                 continue
 
-            captured = datetime.fromtimestamp(p.stat().st_mtime).isoformat(
-                timespec="seconds")
-            conn.add_file(p, digest, size1, captured)
+            captured = captured_at_for(p)
+            conn.add_file(p, digest, size1, captured)  # logs the QUEUED row itself
             added += 1
-            print(f"  + {p.name}  ({size1 / 1e9:.2f} GB)")
 
-    print(f"scan: {added} queued, {skipped} already known")
+    log.info("scan: %s queued, %s already known", added, skipped)
 
 
 # ---------------------------------------------------------------- upload
@@ -134,11 +211,19 @@ def cmd_run(cfg, conn, args):
     now = datetime.now()
 
     if enforce_window and not in_window(now.time(), start, end):
-        print(f"outside window {cfg['window_start']}-{cfg['window_end']}, nothing to do")
+        log.info("outside window %s-%s, nothing to do",
+                  cfg['window_start'], cfg['window_end'])
         return
 
     byte_budget = cfg.get("daily_byte_budget")  # null = unlimited
     count_budget = cfg.get("daily_upload_budget", 100)
+    if args.limit is not None:
+        # Caps what selector.py is allowed to hand back, same as the daily
+        # count budget would -- so a capped first run still gets FIFO order,
+        # the oversized-file carve-out, etc. for free instead of a second
+        # code path that slices the picks list after the fact.
+        count_budget = min(count_budget, args.limit)
+        log.info("--limit %s in effect", args.limit)
     rate = cfg.get("max_bytes_per_sec") or 0
     chunk = cfg.get("chunk_size_bytes", 8 * 1024 * 1024)
 
@@ -147,22 +232,23 @@ def cmd_run(cfg, conn, args):
     if byte_budget:
         effective_budget = byte_budget - usage["carry_debt"]
         if usage["carry_debt"]:
-            print(f"  carrying {usage['carry_debt'] / 1e9:.2f} GB debt from yesterday")
+            log.info("carrying %.2f GB debt from yesterday",
+                      usage['carry_debt'] / 1e9)
 
     picks = selector.select_for_today(
         conn.queued(), effective_budget, count_budget,
         bytes_used=usage["bytes_used"], uploads_used=usage["uploads_used"])
 
     if not picks:
-        print("nothing selected for today")
+        log.info("nothing selected for today")
         return
 
     total = sum(f["size_bytes"] for f in picks)
-    print(f"selected {len(picks)} file(s), {total / 1e9:.2f} GB")
+    log.info("selected %s file(s), %.2f GB", len(picks), total / 1e9)
 
     if args.dry_run:
         for f in picks:
-            print(f"  would upload {f['filename']}  {f['size_bytes'] / 1e9:.2f} GB")
+            log.info("would upload %s  %.2f GB", f['filename'], f['size_bytes'] / 1e9)
         return
 
     yt = ytclient.service(resolve(cfg, "client_secret"), resolve(cfg, "token"))
@@ -171,7 +257,7 @@ def cmd_run(cfg, conn, args):
     for f in picks:
         now = datetime.now()
         if enforce_window and not in_window(now.time(), start, end):
-            print("window closed, stopping between files")
+            log.info("window closed, stopping between files")
             break
 
         remaining = f["size_bytes"] - f["bytes_sent"]
@@ -182,11 +268,11 @@ def cmd_run(cfg, conn, args):
                 if est > full_window:
                     # Can never fit a whole window. Run it anyway or it jams
                     # the queue forever; it will overrun into the morning.
-                    print(f"  ! {f['filename']} needs {est / 3600:.1f}h, longer "
-                          f"than the window -- running it anyway")
+                    log.warning("%s needs %.1fh, longer than the window -- "
+                                 "running it anyway", f['filename'], est / 3600)
                 else:
-                    print(f"  - deferring {f['filename']}, needs "
-                          f"{est / 3600:.1f}h and {left / 3600:.1f}h left")
+                    log.info("deferring %s, needs %.1fh and %.1fh left",
+                              f['filename'], est / 3600, left / 3600)
                     continue
 
         upload_one(cfg, conn, yt, f, chunk, rate, start, end, enforce_window)
@@ -202,7 +288,6 @@ def upload_one(cfg, conn, yt, f, chunk, rate, start, end, enforce_window):
     if not path.exists():
         conn.set_state(f["id"], FAILED)
         conn.note_error(f["id"], "file missing at upload time")
-        print(f"  ! {f['filename']} no longer on disk")
         return
 
     title = path.stem[:100]
@@ -210,7 +295,7 @@ def upload_one(cfg, conn, yt, f, chunk, rate, start, end, enforce_window):
         .format(name=path.name, sha=f["sha256"], captured=f["captured_at"] or "")
 
     conn.set_state(f["id"], UPLOADING)
-    print(f"  > {f['filename']} ({f['size_bytes'] / 1e9:.2f} GB)")
+    log.info("uploading %s (%.2f GB)", f['filename'], f['size_bytes'] / 1e9)
 
     def stop():
         # Only stops mid-file if the window is badly overrun; a saved
@@ -237,19 +322,17 @@ def upload_one(cfg, conn, yt, f, chunk, rate, start, end, enforce_window):
         if f["resumable_uri"]:
             conn.set_resumable_uri(f["id"], None)  # stale session, clean restart
         conn.set_state(f["id"], QUEUED if ytclient.is_retriable(exc) else FAILED)
-        print(f"  ! failed: {exc}")
         return
 
     if response is None:
         conn.set_state(f["id"], QUEUED)
-        print("  - paused, will resume next run")
+        log.info("%s paused, will resume next run", f['filename'])
         return
 
     conn.set_state(f["id"], PROCESSING,
                    youtube_id=response["id"], uploaded_at=now_iso(),
                    resumable_uri=None)
     conn.record_usage(uploads=1)
-    print(f"  ok {response['id']}")
 
 
 # ---------------------------------------------------------------- verify
@@ -269,20 +352,18 @@ def cmd_verify(cfg, conn, args, yt=None):
 
         if proc == "succeeded":
             conn.set_state(f["id"], VERIFIED, verified_at=now_iso())
-            print(f"  verified {f['filename']} -> {f['youtube_id']}")
         elif proc == "failed" or upload in {"failed", "rejected"}:
             conn.set_state(f["id"], FAILED)
             conn.note_error(f["id"], f"processing {proc} / upload {upload}")
-            print(f"  ! rejected {f['filename']}")
         else:
-            print(f"  ... {f['filename']} still processing ({proc})")
+            log.info("%s still processing (%s)", f['filename'], proc)
 
 
 # ---------------------------------------------------------------- prune
 
 def cmd_prune(cfg, conn, args):
     if not cfg.get("delete_after_verify"):
-        print("delete_after_verify is false; nothing deleted")
+        log.info("delete_after_verify is false; nothing deleted")
         return
 
     freed = 0
@@ -292,19 +373,21 @@ def cmd_prune(cfg, conn, args):
             continue  # belt and braces
         if path.exists():
             if args.dry_run:
-                print(f"  would delete {path}")
+                log.info("would delete %s", path)
                 continue
             path.unlink()
             freed += f["size_bytes"]
         conn.set_state(f["id"], DELETED, deleted_at=now_iso())
-        print(f"  deleted {f['filename']}")
     if freed:
-        print(f"freed {freed / 1e9:.2f} GB")
+        log.info("freed %.2f GB", freed / 1e9)
 
 
 # ---------------------------------------------------------------- status
 
 def cmd_status(cfg, conn, args):
+    # Kept as print(), not logging: this is a human report run on demand,
+    # not part of the unattended pipeline -- a timestamp/level prefix on
+    # every row of the table would just be noise.
     counts = conn.counts()
     order = [QUEUED, UPLOADING, PROCESSING, VERIFIED, DELETED, FAILED]
     print(f"{'state':<12}{'files':>8}{'size':>12}")
@@ -327,7 +410,7 @@ def cmd_status(cfg, conn, args):
 
 def cmd_auth(cfg, conn, args):
     ytclient.authorize(resolve(cfg, "client_secret"), resolve(cfg, "token"))
-    print(f"token written to {resolve(cfg, 'token')}")
+    log.info("token written to %s", resolve(cfg, 'token'))
 
 
 # ---------------------------------------------------------------- cli
@@ -341,9 +424,14 @@ def main():
     ap.add_argument("command", choices=COMMANDS)
     ap.add_argument("--config", default=None)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--limit", type=int, default=None,
+                     help="run: cap the number of files attempted this run, "
+                          "on top of the daily count budget. For watching a "
+                          "first real run closely.")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
+    setup_logging(cfg)
     conn = Db(resolve(cfg, "database"))
     try:
         COMMANDS[args.command](cfg, conn, args)

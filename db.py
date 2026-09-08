@@ -5,6 +5,7 @@ file is unlinked -- it is the only record of what exists on YouTube and what
 is gone from disk.
 """
 
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,6 +13,8 @@ from zoneinfo import ZoneInfo
 
 # Google's quota buckets reset at midnight Pacific, not your local midnight.
 PACIFIC = ZoneInfo("America/Los_Angeles")
+
+log = logging.getLogger("nightshift.db")
 
 # State machine. Forward-only.
 RECEIVED = "RECEIVED"
@@ -99,6 +102,8 @@ class Db:
              captured_at, now_iso(), QUEUED),
         )
         self.conn.commit()
+        log.info("queued id=%s hash=%s size=%s path=%s",
+                  cur.lastrowid, sha256, size_bytes, path)
         return cur.lastrowid
 
     def update_path(self, file_id, path):
@@ -108,6 +113,7 @@ class Db:
             (str(path), Path(path).name, file_id),
         )
         self.conn.commit()
+        log.info("path updated id=%s new_path=%s", file_id, path)
 
     # ---------- queue ----------
 
@@ -131,17 +137,34 @@ class Db:
         ).fetchone()
 
     def set_state(self, file_id, state, **fields):
+        # Fetched before the write so the log line always carries hash and
+        # size even if this is the last thing recorded about the row (e.g.
+        # DELETED) -- that's the whole point of logging every transition.
+        before = self.get(file_id)
+
         cols = ", ".join(f"{k} = ?" for k in fields)
         sql = f"UPDATE files SET state = ?{', ' + cols if cols else ''} WHERE id = ?"
         self.conn.execute(sql, (state, *fields.values(), file_id))
         self.conn.commit()
 
+        extra = " ".join(f"{k}={v}" for k, v in fields.items())
+        log.info("id=%s hash=%s size=%s state %s -> %s%s",
+                  file_id,
+                  before["sha256"] if before else "?",
+                  before["size_bytes"] if before else "?",
+                  before["state"] if before else "?",
+                  state,
+                  f" ({extra})" if extra else "")
+
     def note_error(self, file_id, message):
+        row = self.get(file_id)
         self.conn.execute(
             "UPDATE files SET attempts = attempts + 1, last_error = ? WHERE id = ?",
             (str(message)[:500], file_id),
         )
         self.conn.commit()
+        log.warning("id=%s hash=%s error: %s",
+                     file_id, row["sha256"] if row else "?", message)
 
     def set_resumable_uri(self, file_id, uri):
         self.conn.execute(

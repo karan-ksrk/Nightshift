@@ -9,6 +9,9 @@ archive.db-journal
 archive.db-wal
 archive.db-shm
 
+# rotating log + its backups (nightshift.log.1, .2, ...)
+nightshift.log*
+
 # python
 __pycache__/
 *.pyc

@@ -16,15 +16,14 @@ throttled rate, verifies processing, optionally deletes.
 
 ### Remaining work
 
-- [ ] **Port the ad-hoc checks into `pytest`.** See CLAUDE.md § Testing. Do this
-      first — everything below will refactor this code.
-- [ ] **Structured logging** to a rotating file, not `print()`. The Pi runs this
+- [x] **Port the ad-hoc checks into `pytest`.** See CLAUDE.md § Testing.
+- [x] **Structured logging** to a rotating file, not `print()`. The Pi runs this
       unattended; when a file vanishes you need to know why. Log every state
       transition with file id, hash, and bytes.
-- [ ] **`--limit N` flag** on `run`, so a first real run can be capped at 2–3
+- [x] **`--limit N` flag** on `run`, so a first real run can be capped at 2–3
       files while you watch it.
 - [ ] **Handle disk-full on the Pi** during Phase 2 receive. Currently unhandled.
-- [ ] **`captured_at` from metadata** rather than mtime — `ffprobe`/mediainfo
+- [x] **`captured_at` from metadata** rather than mtime — `ffprobe`
       creation_time, fall back to mtime. Matters because FIFO ordering is by
       this field, and copying files destroys mtime.
 - [ ] **`reconcile` command**: for every row in VERIFIED/DELETED, confirm the

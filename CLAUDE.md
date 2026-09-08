@@ -103,7 +103,11 @@ uploads are irreversible.
 - `tzdata` is needed on Windows for `zoneinfo`.
 - Resumable session URIs last about a week. If one is stale, clear it and
   restart the file cleanly rather than retrying the URI.
-- `captured_at` currently comes from file mtime, which copying can destroy.
-  Upgrading to EXIF/mediainfo is a known TODO.
+- `captured_at` comes from the container's `creation_time` tag via `ffprobe`
+  (`main.py:captured_at_for`), falling back to file mtime when `ffprobe` isn't
+  on PATH or the tag is missing/unparsable. mtime alone was wrong because
+  copying (phone sync, drive transfer) destroys it, and FIFO order depends on
+  this field. `ffprobe` is a soft dependency -- not in requirements.txt, no
+  hard failure if absent, just a quieter fallback to mtime.
 - Don't add an artificial delay between files. The rate limit and time window
   already pace uploads; a fixed gap just wastes window time.
