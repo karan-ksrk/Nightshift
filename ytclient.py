@@ -111,11 +111,24 @@ def pump(request, max_bytes_per_sec, on_progress=None, on_uri=None,
                 on_progress(delta)
 
         if max_bytes_per_sec and status:
-            chunk = request.resumable.chunksize
+            # chunksize() is a method on MediaUpload, not a property. Reading
+            # it without the call gives a bound method and the division below
+            # raises TypeError -- which only ever bit multi-chunk uploads,
+            # since a file smaller than one chunk never sets `status`.
+            chunk = request.resumable.chunksize()
             target = chunk / max_bytes_per_sec
             elapsed = time.monotonic() - t0
             if elapsed < target:
                 time.sleep(target - elapsed)
+
+    # The call that completes the upload returns (None, response), so the
+    # final chunk never arrives as a status and its bytes would go unbilled --
+    # a file smaller than one chunk would report nothing at all. Settle up
+    # against the declared size so bytes_used really is what went on the wire.
+    if on_progress:
+        total = request.resumable.size() if request.resumable else None
+        if total and total > last_progress:
+            on_progress(total - last_progress)
 
     return response
 

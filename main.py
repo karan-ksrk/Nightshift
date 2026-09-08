@@ -168,7 +168,7 @@ def captured_at_for(path):
 def cmd_scan(cfg, conn, args):
     folders = [Path(f).expanduser() for f in cfg["watch_folders"]]
     min_size = cfg.get("min_size_bytes", 1024 * 1024)
-    added = skipped = 0
+    added = skipped = unchanged = 0
 
     for folder in folders:
         if not folder.exists():
@@ -177,27 +177,39 @@ def cmd_scan(cfg, conn, args):
         for p in sorted(folder.rglob("*")):
             if not p.is_file() or p.suffix.lower() not in VIDEO_EXTS:
                 continue
-            if p.stat().st_size < min_size:
+
+            st = p.stat()
+            size1 = st.st_size
+            if size1 < min_size or size1 == 0:  # too small, or still being written
                 continue
 
-            # Skip files still being written to.
-            size1 = p.stat().st_size
-            if size1 == 0:
+            # Hashing means reading every byte, which on a card reader full of
+            # drone footage is the whole cost of a scan. A file already on
+            # record at this exact path, size and mtime cannot have changed
+            # content, so skip it -- rescans of a settled folder do no I/O.
+            if conn.unchanged_at_path(p, size1, st.st_mtime):
+                unchanged += 1
                 continue
 
             digest = sha256_file(p)
             seen = conn.seen_hash(digest)
             if seen:
                 if str(p) != conn.get(seen["id"])["path"]:
-                    conn.update_path(seen["id"], p)
+                    conn.update_path(seen["id"], p, st.st_mtime)
+                else:
+                    # Same path, same content -- just record the mtime so the
+                    # next scan takes the no-I/O path above.
+                    conn.set_mtime(seen["id"], st.st_mtime)
                 skipped += 1
                 continue
 
             captured = captured_at_for(p)
-            conn.add_file(p, digest, size1, captured)  # logs the QUEUED row itself
+            conn.add_file(p, digest, size1, captured,  # logs the QUEUED row
+                          mtime=st.st_mtime)
             added += 1
 
-    log.info("scan: %s queued, %s already known", added, skipped)
+    log.info("scan: %s queued, %s already known, %s unchanged (not re-hashed)",
+              added, skipped, unchanged)
 
 
 # ---------------------------------------------------------------- upload

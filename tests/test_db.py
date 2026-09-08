@@ -3,6 +3,7 @@ path, and carry-debt arithmetic is what lets an oversized file survive
 selector.py's day-alone carve-out without jamming the queue forever."""
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -44,10 +45,92 @@ def test_moved_file_updates_path_not_identity(conn):
     conn.update_path(fid, "/new/renamed.mp4")
 
     row = conn.get(fid)
-    assert row["path"] == "/new/renamed.mp4"
+    # Paths are stored normalised through pathlib, so the separator is the
+    # platform's -- compare the same way rather than hardcoding "/".
+    assert row["path"] == str(Path("/new/renamed.mp4"))
     assert row["filename"] == "renamed.mp4"
     assert row["sha256"] == "deadbeef"  # identity unchanged
     assert conn.seen_hash("deadbeef")["id"] == fid  # still the same row
+
+
+# ---------------------------------------------------------------- rescan fast path
+
+def test_unchanged_at_path_true_for_same_path_size_mtime(conn):
+    conn.add_file("/videos/a.mp4", "deadbeef", 1000, "2026-01-01T00:00:00",
+                  mtime=1234.5)
+    assert conn.unchanged_at_path("/videos/a.mp4", 1000, 1234.5) is True
+
+
+def test_unchanged_at_path_false_when_size_differs(conn):
+    conn.add_file("/videos/a.mp4", "deadbeef", 1000, "2026-01-01T00:00:00",
+                  mtime=1234.5)
+    assert conn.unchanged_at_path("/videos/a.mp4", 999, 1234.5) is False
+
+
+def test_unchanged_at_path_false_when_mtime_differs(conn):
+    conn.add_file("/videos/a.mp4", "deadbeef", 1000, "2026-01-01T00:00:00",
+                  mtime=1234.5)
+    assert conn.unchanged_at_path("/videos/a.mp4", 1000, 9999.9) is False
+
+
+def test_unchanged_at_path_false_for_unknown_path(conn):
+    assert conn.unchanged_at_path("/videos/never-seen.mp4", 1000, 1234.5) is False
+
+
+def test_unchanged_at_path_false_when_mtime_never_recorded(conn):
+    """Rows written before the mtime column existed must fall through to a
+    real hash rather than being trusted blindly."""
+    conn.add_file("/videos/a.mp4", "deadbeef", 1000, "2026-01-01T00:00:00")
+    assert conn.unchanged_at_path("/videos/a.mp4", 1000, 1234.5) is False
+
+
+def test_set_mtime_backfills_and_enables_fast_path(conn):
+    fid = conn.add_file("/videos/a.mp4", "deadbeef", 1000, "2026-01-01T00:00:00")
+    assert conn.unchanged_at_path("/videos/a.mp4", 1000, 1234.5) is False
+
+    conn.set_mtime(fid, 1234.5)
+
+    assert conn.unchanged_at_path("/videos/a.mp4", 1000, 1234.5) is True
+
+
+def test_update_path_carries_mtime_to_the_new_location(conn):
+    fid = conn.add_file("/old/a.mp4", "deadbeef", 1000, "2026-01-01T00:00:00",
+                        mtime=1.0)
+    conn.update_path(fid, "/new/a.mp4", mtime=2.0)
+
+    assert conn.unchanged_at_path("/new/a.mp4", 1000, 2.0) is True
+    assert conn.unchanged_at_path("/old/a.mp4", 1000, 1.0) is False
+
+
+def test_migration_adds_mtime_to_a_preexisting_db(tmp_path):
+    """A db created before the mtime column existed must open and work."""
+    import sqlite3 as sq
+    dbfile = tmp_path / "old.db"
+    old = sq.connect(dbfile)
+    old.executescript("""
+        CREATE TABLE files (
+            id INTEGER PRIMARY KEY, path TEXT NOT NULL, filename TEXT NOT NULL,
+            sha256 TEXT NOT NULL UNIQUE, size_bytes INTEGER NOT NULL,
+            captured_at TEXT, received_at TEXT NOT NULL, state TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+            resumable_uri TEXT, bytes_sent INTEGER NOT NULL DEFAULT 0,
+            youtube_id TEXT, uploaded_at TEXT, verified_at TEXT, deleted_at TEXT
+        );
+        INSERT INTO files (path, filename, sha256, size_bytes, received_at, state)
+        VALUES ('/videos/a.mp4', 'a.mp4', 'deadbeef', 1000, '2026-01-01', 'QUEUED');
+    """)
+    old.commit()
+    old.close()
+
+    d = Db(dbfile)
+    try:
+        cols = {r["name"] for r in d.conn.execute("PRAGMA table_info(files)")}
+        assert "mtime" in cols
+        # Existing row survived and falls through to a real hash.
+        assert d.seen_hash("deadbeef") is not None
+        assert d.unchanged_at_path("/videos/a.mp4", 1000, 1234.5) is False
+    finally:
+        d.close()
 
 
 # ---------------------------------------------------------------- carry-debt

@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS files (
     filename      TEXT    NOT NULL,
     sha256        TEXT    NOT NULL UNIQUE,
     size_bytes    INTEGER NOT NULL,
+    mtime         REAL,
     captured_at   TEXT,
     received_at   TEXT    NOT NULL,
     state         TEXT    NOT NULL,
@@ -79,7 +80,16 @@ class Db:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self):
+        """No migrations framework by design -- just explicit guarded ALTERs
+        for columns added after a db was already created in the field."""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(files)")}
+        if "mtime" not in cols:
+            self.conn.execute("ALTER TABLE files ADD COLUMN mtime REAL")
+            self.conn.commit()
 
     def close(self):
         self.conn.close()
@@ -92,13 +102,34 @@ class Db:
         ).fetchone()
         return row
 
-    def add_file(self, path, sha256, size_bytes, captured_at):
+    def unchanged_at_path(self, path, size_bytes, mtime):
+        """True when a row already sits at this exact path with the same size
+        and mtime, so `scan` can skip re-hashing it.
+
+        Purely a rescan speedup, never a substitute for the hash: identity is
+        still SHA-256. Any difference at all -- moved, resized, touched, or a
+        row predating the mtime column -- falls through to a real hash. The
+        residual risk is an in-place edit that preserves both size and mtime,
+        which cameras and file copies don't do.
+        """
+        # str(Path(...)) so the lookup key is normalised the same way
+        # add_file/update_path store it -- on Windows that means backslashes.
+        row = self.conn.execute(
+            "SELECT size_bytes, mtime FROM files WHERE path = ?",
+            (str(Path(path)),)
+        ).fetchone()
+        if row is None or row["mtime"] is None:
+            return False
+        return row["size_bytes"] == size_bytes and row["mtime"] == mtime
+
+    def add_file(self, path, sha256, size_bytes, captured_at, mtime=None):
         path = Path(path)
         cur = self.conn.execute(
             """INSERT INTO files
-               (path, filename, sha256, size_bytes, captured_at, received_at, state)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (str(path), path.name, sha256, size_bytes,
+               (path, filename, sha256, size_bytes, mtime, captured_at,
+                received_at, state)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (str(path), path.name, sha256, size_bytes, mtime,
              captured_at, now_iso(), QUEUED),
         )
         self.conn.commit()
@@ -106,11 +137,27 @@ class Db:
                   cur.lastrowid, sha256, size_bytes, path)
         return cur.lastrowid
 
-    def update_path(self, file_id, path):
-        """Same content, moved on disk. Keep the row, fix the pointer."""
+    def set_mtime(self, file_id, mtime):
+        """Record the mtime of the file already sitting at this row's path.
+
+        Backfill: rows written before the mtime column existed, and rows
+        re-hashed at an unchanged path, would otherwise never get one and so
+        would be re-hashed on every scan forever.
+        """
         self.conn.execute(
-            "UPDATE files SET path = ?, filename = ? WHERE id = ?",
-            (str(path), Path(path).name, file_id),
+            "UPDATE files SET mtime = ? WHERE id = ?", (mtime, file_id))
+        self.conn.commit()
+
+    def update_path(self, file_id, path, mtime=None):
+        """Same content, moved on disk. Keep the row, fix the pointer.
+
+        mtime travels with the path -- it describes the file sitting there,
+        so unchanged_at_path can skip re-hashing this row on the next scan.
+        """
+        path = Path(path)
+        self.conn.execute(
+            "UPDATE files SET path = ?, filename = ?, mtime = ? WHERE id = ?",
+            (str(path), path.name, mtime, file_id),
         )
         self.conn.commit()
         log.info("path updated id=%s new_path=%s", file_id, path)
