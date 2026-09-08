@@ -35,6 +35,12 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
 
+  # Phase 3 -- see the Phase 3 plan for why each of these, specifically
+  dio: ^5.7.0                      # precise Content-Range control, upload progress
+  shared_preferences: ^2.3.3       # host/port -- not secret
+  flutter_secure_storage: ^9.2.2   # server token -- is a secret
+  provider: ^6.1.2                 # sharing upload/status state across screens
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
