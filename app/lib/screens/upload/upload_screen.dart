@@ -52,6 +52,24 @@ class _UploadScreenState extends State<UploadScreen> {
     _loadExisting();
   }
 
+  // Rows left mid-flight by a force-quit or crash -- picked but not yet
+  // hashed, hashed but not init'd, mid-upload, mid-verify, or caught in a
+  // hash-mismatch retry -- get swept back into the engine on launch. The
+  // engine itself decides how to pick each one up: hashing restarts from 0
+  // (no partial-hash checkpoint), and anything with a server_upload_id
+  // already set reconciles against GET /offset rather than trusting
+  // whatever bytes_sent this row was last saved with (M4). Terminal states
+  // (confirmed/failed/deletedLocal) are left alone -- failed needs a manual
+  // Retry tap, not an automatic one.
+  static const _resumableStates = {
+    LocalUploadState.pending,
+    LocalUploadState.hashing,
+    LocalUploadState.ready,
+    LocalUploadState.uploading,
+    LocalUploadState.verifying,
+    LocalUploadState.hashMismatch,
+  };
+
   Future<void> _loadExisting() async {
     final all = await _dao.all();
     if (!mounted) return;
@@ -60,6 +78,12 @@ class _UploadScreenState extends State<UploadScreen> {
         if (row.id != null) _rows[row.id!] = row;
       }
     });
+
+    final resumeIds = [
+      for (final row in all)
+        if (_resumableStates.contains(row.state) && row.id != null) row.id!,
+    ];
+    if (resumeIds.isNotEmpty) await _processQueue(resumeIds);
   }
 
   Future<NightshiftClient> _buildClient() async {

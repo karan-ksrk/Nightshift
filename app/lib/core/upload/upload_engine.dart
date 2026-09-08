@@ -7,13 +7,15 @@ import '../db/uploads_dao.dart';
 import '../hashing/sha256_hasher.dart';
 
 /// Drives one row through pick -> hash -> init -> chunks -> complete ->
-/// CONFIRMED. M3 scope: straight-through, single app session. Authoritative
-/// resume-after-app-restart (reconciling against a live GET /offset call
-/// rather than trusting locally-cached bytes_sent) is M4's job -- see the
-/// plan. Within a single run, though, this already handles the two
-/// self-correcting responses the protocol defines: a 416 gap (the server
-/// tells us where it actually is; we resume from there) and a 409
-/// hash_mismatch on /complete (capped full-file resend).
+/// CONFIRMED. Handles three self-correcting responses the protocol
+/// defines: a 416 gap (the server tells us where it actually is; we resume
+/// from there), a 409 hash_mismatch on /complete (capped full-file resend),
+/// and -- M4 -- authoritative resume whenever [run] is called on a row that
+/// already has a server_upload_id, whether that's a manual Retry or an
+/// app-restart resume sweep. That last case never trusts a locally cached
+/// bytes_sent: it's reconciled against a live GET /offset (or, if the
+/// session itself is gone, an /init dedupe-probe) before any chunk is sent.
+/// See [_reconcileSession].
 ///
 /// Any other failure -- network drop, unexpected error -- marks the row
 /// FAILED (or leaves it wherever it was) and stops; [run] is safe to call
@@ -82,6 +84,16 @@ class UploadEngine {
           await reload();
           return;
         }
+      } else {
+        // This run() call started with a server_upload_id already on the
+        // row -- either a manual Retry or the app-launch resume sweep
+        // picking up a row left mid-flight by a force-quit. Either way,
+        // never trust whatever bytes_sent was last saved; ask the server.
+        row = await _reconcileSession(row);
+        if (row.state == LocalUploadState.confirmed) {
+          await reload();
+          return;
+        }
       }
 
       for (var attempt = 0; attempt < maxHashMismatchRetries; attempt++) {
@@ -123,6 +135,60 @@ class UploadEngine {
     } catch (e) {
       await dao.markFailed(id, lastError: e.toString());
       await reload();
+    }
+  }
+
+  /// The resume authority for a row that already has a server_upload_id
+  /// going into this [run] call. GET /offset is asked, never assumed: the
+  /// locally cached bytes_sent could lag what the server actually has (a
+  /// chunk landed but the app died before the response was recorded) or
+  /// overstate it (the write itself never completed) -- either way, only
+  /// the server knows.
+  ///
+  /// If the session itself is gone (404 -- server restarted, session
+  /// expired, the .part file was cleaned up) falls back to re-running
+  /// /init with the cached sha256 as a dedupe probe: if the file was
+  /// actually fully received and /complete already ran before the app
+  /// could record it, /init's own dedupe check now returns 409 duplicate
+  /// and the row jumps straight to CONFIRMED with nothing re-sent.
+  /// Otherwise it's a genuinely fresh session and the chunk loop restarts
+  /// from 0 -- see [_reinitAsDedupeProbe].
+  Future<LocalUpload> _reconcileSession(LocalUpload row) async {
+    try {
+      final offset = await client.uploadOffset(row.serverUploadId!);
+      if (offset != row.bytesSent) {
+        await dao.setBytesSent(row.id!, offset);
+      }
+      return (await dao.findById(row.id!))!;
+    } on NightshiftApiException catch (e) {
+      if (!e.isUnknownUploadId) rethrow;
+      return _reinitAsDedupeProbe(row);
+    }
+  }
+
+  Future<LocalUpload> _reinitAsDedupeProbe(LocalUpload row) async {
+    try {
+      final uploadId = await client.initUpload(
+        filename: row.filename,
+        sizeBytes: row.sizeBytes,
+        sha256: row.sha256!,
+        capturedAt: row.capturedAt,
+      );
+      // A fresh session starts empty server-side -- the old one, and
+      // whatever it had received, is gone with it.
+      await dao.setServerUploadId(row.id!, uploadId);
+      await dao.setBytesSent(row.id!, 0);
+      return (await dao.findById(row.id!))!;
+    } on NightshiftApiException catch (e) {
+      if (e.isDuplicate) {
+        await dao.setConfirmed(
+          row.id!,
+          serverFileId: e.duplicateFileId!,
+          serverState: e.duplicateState ?? 'QUEUED',
+        );
+        return (await dao.findById(row.id!))!;
+      }
+      rethrow;
     }
   }
 
