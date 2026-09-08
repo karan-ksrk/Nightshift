@@ -44,21 +44,26 @@ and selector carry over unchanged.
 
 ### Tasks
 
-- [ ] FastAPI app, uvicorn behind systemd. Bind to LAN only.
-- [ ] `POST /upload/init` → returns an upload id; body carries filename, size,
+- [x] FastAPI app (`server.py`), uvicorn. Bind to LAN only. Systemd unit still
+      to write when it's deployed on the Pi for real.
+- [x] `POST /upload/init` → returns an upload id; body carries filename, size,
       client-computed SHA-256, captured_at. **Reject if the hash is already
       known** — that's free dedupe from the phone side.
-- [ ] `PUT /upload/{id}/chunk` with a `Content-Range` header. Append to a
-      `.part` file. Idempotent per offset so a retried chunk is harmless.
-- [ ] `POST /upload/{id}/complete` → server re-hashes the assembled file,
+- [x] `PUT /upload/{id}/chunk` with a `Content-Range` header. Seeks to the
+      offset and writes, not append — idempotent per offset so a retried
+      chunk is harmless; a gap (offset past what's on disk) is rejected.
+- [x] `POST /upload/{id}/complete` → server re-hashes the assembled file,
       compares to the client's hash, and only then moves it into the watch
       folder and inserts a QUEUED row. Mismatch = 409 and the phone re-sends.
-- [ ] `GET /upload/{id}/offset` → resume point after the phone dies mid-transfer.
-- [ ] `GET /status` → counts by state, today's ledger, estimated days to drain.
-- [ ] `GET /files?state=` → paginated, for the app's list views.
-- [ ] Shared-secret auth header. This is LAN-only, so a static token in config is
-      proportionate — don't build user accounts.
-- [ ] Tailscale for access from outside the house. Free tier, no port forwarding.
+      Also dedupes a concurrent duplicate rather than violating the sha256
+      UNIQUE constraint on `files`.
+- [x] `GET /upload/{id}/offset` → resume point after the phone dies mid-transfer.
+- [x] `GET /status` → counts by state, today's ledger, estimated days to drain.
+- [x] `GET /files?state=` → paginated, for the app's list views.
+- [x] Shared-secret auth header (`X-Nightshift-Token`). This is LAN-only, so a
+      static token in config is proportionate — don't build user accounts.
+- [x] Tailscale for access from outside the house. Already set up on both the
+      Pi and this PC, same tailnet as the phones -- nothing to do here.
 
 ### Acceptance
 

@@ -54,6 +54,21 @@ CREATE TABLE IF NOT EXISTS daily_usage (
     uploads_used INTEGER NOT NULL DEFAULT 0,
     carry_debt   INTEGER NOT NULL DEFAULT 0
 );
+
+-- In-flight chunked uploads from the phone (Phase 2). Deliberately separate
+-- from `files`: a `files` row means "this content is queued/archived", and
+-- that only becomes true once /complete re-hashes the assembled bytes and
+-- they check out. A dropped or abandoned transfer just leaves a stale row
+-- here plus a .part file -- neither touches the manifest.
+CREATE TABLE IF NOT EXISTS uploads (
+    id           TEXT    PRIMARY KEY,
+    filename     TEXT    NOT NULL,
+    size_bytes   INTEGER NOT NULL,
+    sha256       TEXT    NOT NULL,
+    captured_at  TEXT,
+    part_path    TEXT    NOT NULL,
+    created_at   TEXT    NOT NULL
+);
 """
 
 
@@ -73,10 +88,19 @@ def next_pacific_date(pt_date):
 
 
 class Db:
-    def __init__(self, path):
+    def __init__(self, path, check_same_thread=True):
+        # check_same_thread=False is for server.py: FastAPI runs a sync
+        # `Depends` generator in a worker thread but an `async def` route's
+        # own body on the event-loop thread, so a connection created by the
+        # dependency gets used from a different thread than it was opened
+        # on. Each request still gets its own connection (get_db yields a
+        # fresh Db per request) and uses it from one thread at a time, never
+        # concurrently -- this only relaxes sqlite3's same-thread check, it
+        # doesn't add cross-request sharing. The CLI stays strict (default
+        # True) since it has no reason to cross threads at all.
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(self.path, check_same_thread=check_same_thread)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
@@ -162,6 +186,32 @@ class Db:
         self.conn.commit()
         log.info("path updated id=%s new_path=%s", file_id, path)
 
+    # ---------- in-flight uploads (Phase 2) ----------
+
+    def create_upload(self, upload_id, filename, size_bytes, sha256,
+                      captured_at, part_path):
+        self.conn.execute(
+            """INSERT INTO uploads
+               (id, filename, size_bytes, sha256, captured_at, part_path,
+                created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (upload_id, filename, size_bytes, sha256, captured_at,
+             str(part_path), now_iso()),
+        )
+        self.conn.commit()
+        log.info("upload session opened id=%s filename=%s size=%s hash=%s",
+                  upload_id, filename, size_bytes, sha256)
+
+    def get_upload(self, upload_id):
+        return self.conn.execute(
+            "SELECT * FROM uploads WHERE id = ?", (upload_id,)
+        ).fetchone()
+
+    def delete_upload(self, upload_id):
+        self.conn.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
+        self.conn.commit()
+        log.info("upload session closed id=%s", upload_id)
+
     # ---------- queue ----------
 
     def queued(self):
@@ -177,6 +227,28 @@ class Db:
         return self.conn.execute(
             "SELECT * FROM files WHERE state = ? ORDER BY id", (state,)
         ).fetchall()
+
+    def list_files(self, state=None, limit=50, offset=0):
+        """Paginated, for the phone app's list views -- `in_state` above
+        loads a whole state's rows at once, fine for the CLI but not for a
+        list screen once the archive has thousands of rows."""
+        if state:
+            total = self.conn.execute(
+                "SELECT COUNT(*) c FROM files WHERE state = ?", (state,)
+            ).fetchone()["c"]
+            rows = self.conn.execute(
+                "SELECT * FROM files WHERE state = ? ORDER BY id DESC "
+                "LIMIT ? OFFSET ?", (state, limit, offset),
+            ).fetchall()
+        else:
+            total = self.conn.execute(
+                "SELECT COUNT(*) c FROM files"
+            ).fetchone()["c"]
+            rows = self.conn.execute(
+                "SELECT * FROM files ORDER BY id DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+        return rows, total
 
     def get(self, file_id):
         return self.conn.execute(

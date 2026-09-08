@@ -83,6 +83,7 @@ them. Fatal on an unattended Pi. No verification needed — personal use under
 | `db.py` | Schema, state transitions, daily usage ledger, carry-debt. |
 | `selector.py` | Which files go today. Small and deliberate — read the docstring. |
 | `ytclient.py` | OAuth, resumable throttled upload, processing check. |
+| `server.py` | Phase 2 FastAPI app. Chunked upload from the phone; never calls YouTube itself -- `main.py run` still owns that, same db. |
 | `config.example.json` | Template. Real `config.json` is gitignored. |
 
 ## Testing
@@ -100,6 +101,9 @@ there is no package layout. What is covered:
   once. `pump` had no tests at first and shipped two bugs; keep it covered.
 - `test_captured_at.py` — ffprobe parsing and every fallback to mtime
 - `test_reconcile.py` — missing-video reporting, and that it never mutates state
+- `test_server.py` — via FastAPI's TestClient: auth, dedupe on `/upload/init`,
+  chunk idempotency/gap rejection, and that a `files` row only appears once
+  the assembled bytes re-hash to what the client claimed
 
 Never test against the real YouTube API — mock `ytclient`. Quota is 100/day and
 uploads are irreversible.
@@ -107,6 +111,12 @@ uploads are irreversible.
 ## Gotchas
 
 - `tzdata` is needed on Windows for `zoneinfo`.
+- `server.py`'s `async def upload_chunk` uses `await request.body()`, which
+  means the endpoint body runs on the event loop thread while its
+  `Depends(get_db)` connection was opened in a worker thread -- sqlite3
+  forbids cross-thread use by default. `Db(path, check_same_thread=False)`
+  is the fix, scoped to the server (the CLI stays strict). If you add
+  another `async def` route that touches the db, it needs the same.
 - Resumable session URIs last about a week. If one is stale, clear it and
   restart the file cleanly rather than retrying the URI.
 - `captured_at` comes from the container's `creation_time` tag via `ffprobe`

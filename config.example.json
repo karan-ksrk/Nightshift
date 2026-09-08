@@ -22,5 +22,7 @@
   "category_id": 22,
   "description_template": "Archived: {name}\nCaptured: {captured}\nSHA256: {sha}",
 
-  "delete_after_verify": false
+  "delete_after_verify": false,
+
+  "server_token": "change-me-to-a-long-random-string"
 }
