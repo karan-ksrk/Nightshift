@@ -97,7 +97,7 @@ class UploadEngine {
       }
 
       for (var attempt = 0; attempt < maxHashMismatchRetries; attempt++) {
-        await _uploadRemainingChunks(row!);
+        await _uploadRemainingChunks(row!, onChunkSent: onUpdate);
         await dao.markVerifying(id);
         row = await reload();
 
@@ -192,8 +192,22 @@ class UploadEngine {
     }
   }
 
-  Future<void> _uploadRemainingChunks(LocalUpload row) async {
+  /// [onChunkSent], when given, is called with the freshly-reloaded row
+  /// after every chunk's bytes_sent is persisted -- this is the only place
+  /// progress actually changes mid-upload, so without wiring this through,
+  /// a caller's UI never animates: it would see UPLOADING once at the
+  /// start and CONFIRMED once at the end, with nothing in between.
+  Future<void> _uploadRemainingChunks(
+    LocalUpload row, {
+    void Function(LocalUpload)? onChunkSent,
+  }) async {
     if (row.bytesSent >= row.sizeBytes) return;
+
+    Future<void> reportProgress() async {
+      if (onChunkSent == null) return;
+      final updated = await dao.findById(row.id!);
+      if (updated != null) onChunkSent(updated);
+    }
 
     final file = await File(row.localPath).open();
     try {
@@ -219,6 +233,7 @@ class UploadEngine {
             // where it actually is, don't guess.
             sent = e.gapOffset!;
             await dao.setBytesSent(row.id!, sent);
+            await reportProgress();
             continue;
           }
           rethrow;
@@ -226,6 +241,7 @@ class UploadEngine {
 
         sent = received; // trust the server's count, not an assumed end+1
         await dao.setBytesSent(row.id!, sent);
+        await reportProgress();
       }
     } finally {
       await file.close();

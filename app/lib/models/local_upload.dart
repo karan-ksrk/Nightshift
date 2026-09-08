@@ -77,6 +77,11 @@ class LocalUpload {
 
   final DateTime? deletedAt;
 
+  /// Local-only: dropped from the default list view (see
+  /// UploadsDao.hideFromList) without touching the phone file, the Pi, or
+  /// the row itself. Never displayed as a state -- just a UI filter.
+  final bool hiddenFromList;
+
   const LocalUpload({
     this.id,
     required this.localUri,
@@ -96,6 +101,7 @@ class LocalUpload {
     this.lastError,
     this.confirmedAt,
     this.deletedAt,
+    this.hiddenFromList = false,
   });
 
   bool get isConfirmed => state == LocalUploadState.confirmed;
@@ -123,5 +129,6 @@ class LocalUpload {
         deletedAt: m['deleted_at'] != null
             ? DateTime.parse(m['deleted_at'] as String)
             : null,
+        hiddenFromList: (m['hidden_from_list'] as int? ?? 0) == 1,
       );
 }

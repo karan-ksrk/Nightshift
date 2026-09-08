@@ -113,6 +113,39 @@ void main() {
     );
   }
 
+  group('progress reporting', () {
+    test('onUpdate fires with growing bytes_sent after every chunk, not just once at the end',
+        () async {
+      // Regression test: _uploadRemainingChunks used to persist bytes_sent
+      // per chunk but never call back into onUpdate until the whole file
+      // was done, so the UI saw UPLOADING once at 0% and CONFIRMED once at
+      // the end with nothing in between -- no progress bar animation.
+      final bytes = List<int>.filled(20 * 1024 * 1024, 5); // 3 chunks of 8MiB
+      final id = await pickWithFile('e.mp4', bytes);
+      await dao.setHashComputed(id, 'e' * 64);
+
+      client.onInit = () => 'sess-progress';
+      client.onComplete = () => (8, 'QUEUED', false);
+
+      final seenBytesSent = <int>[];
+      await engine.run(id, onUpdate: (row) {
+        if (row.state == LocalUploadState.uploading) {
+          seenBytesSent.add(row.bytesSent);
+        }
+      });
+
+      // One callback when the session opens (bytes_sent still 0) plus one
+      // per chunk (3) -- each strictly further along than the last, not a
+      // single jump from 0 straight to done.
+      expect(seenBytesSent.length, greaterThanOrEqualTo(4));
+      expect(seenBytesSent.first, 0);
+      expect(seenBytesSent.last, bytes.length);
+      for (var i = 1; i < seenBytesSent.length; i++) {
+        expect(seenBytesSent[i], greaterThan(seenBytesSent[i - 1]));
+      }
+    });
+  });
+
   group('resume via GET /offset', () {
     test(
         'a row already fully received server-side skips straight to complete, no chunks resent',

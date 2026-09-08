@@ -240,4 +240,36 @@ void main() {
       expect(await dao.findBySha256('c' * 64), isNull);
     });
   });
+
+  group('hideFromList', () {
+    test('a hidden row disappears from all() by default but survives',
+        () async {
+      final id = await pick('a.mp4');
+      await dao.setHashComputed(id, 'a' * 64);
+      await dao.setConfirmed(id, serverFileId: 1, serverState: 'QUEUED');
+
+      await dao.hideFromList(id);
+
+      expect(await dao.all(), isEmpty);
+      final all = await dao.all(includeHidden: true);
+      expect(all.length, 1);
+      expect(all.first.hiddenFromList, isTrue);
+
+      // The row itself is untouched, per the manifest philosophy -- hiding
+      // is a UI filter, not a state change.
+      final row = await dao.findById(id);
+      expect(row!.state, LocalUploadState.confirmed);
+      expect(row.hiddenFromList, isTrue);
+    });
+
+    test('hiding one row does not affect others', () async {
+      final a = await pick('a.mp4');
+      final b = await pick('b.mp4');
+      await dao.hideFromList(a);
+
+      final visible = await dao.all();
+      expect(visible.length, 1);
+      expect(visible.first.id, b);
+    });
+  });
 }

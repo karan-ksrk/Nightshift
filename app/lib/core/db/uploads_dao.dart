@@ -26,9 +26,14 @@ class UploadsDao {
         await db.execute(createUploadsTableSql);
         await db.execute(createStateIndexSql);
       },
-      // No migrations exist yet (schemaVersion is still 1) -- when one is
-      // needed, add a guarded `ALTER TABLE ... ADD COLUMN` here per bump,
-      // same shape as db.py's _migrate(), not a rewrite of onCreate.
+      // Guarded ALTERs per version bump, same shape as db.py's _migrate()
+      // -- never rewrite createUploadsTableSql for an already-shipped
+      // version, since onCreate only runs for a brand-new database file.
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await db.execute(alterAddHiddenFromListSql);
+        }
+      },
     );
     return _db!;
   }
@@ -200,6 +205,20 @@ class UploadsDao {
     );
   }
 
+  /// Local-only: drops the row out of the default list view without
+  /// touching the phone file, the Pi, or the row itself (still queryable
+  /// with `includeHidden: true`). For rows the Delete button can never
+  /// resolve -- most commonly a pick made before persistAccess existed.
+  Future<void> hideFromList(int id) async {
+    final db = await _database;
+    await db.update(
+      'uploads',
+      {'hidden_from_list': 1, 'updated_at': _now},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   Future<LocalUpload?> findById(int id) async {
     final db = await _database;
     final rows = await db.query('uploads', where: 'id = ?', whereArgs: [id]);
@@ -215,12 +234,26 @@ class UploadsDao {
 
   /// All rows, oldest pick first. Optionally scoped to one state (e.g. the
   /// resume sweep on app launch looks for UPLOADING/VERIFYING rows).
-  Future<List<LocalUpload>> all({LocalUploadState? state}) async {
+  /// Excludes rows hidden via [hideFromList] unless [includeHidden] is set
+  /// -- the manifest row itself is never actually removed.
+  Future<List<LocalUpload>> all({
+    LocalUploadState? state,
+    bool includeHidden = false,
+  }) async {
     final db = await _database;
+    final conditions = <String>[];
+    final args = <Object?>[];
+    if (state != null) {
+      conditions.add('state = ?');
+      args.add(state.name);
+    }
+    if (!includeHidden) {
+      conditions.add('hidden_from_list = 0');
+    }
     final rows = await db.query(
       'uploads',
-      where: state != null ? 'state = ?' : null,
-      whereArgs: state != null ? [state.name] : null,
+      where: conditions.isEmpty ? null : conditions.join(' AND '),
+      whereArgs: args.isEmpty ? null : args,
       orderBy: 'added_at ASC',
     );
     return rows.map(LocalUpload.fromMap).toList();

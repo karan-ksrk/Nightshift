@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -37,14 +38,23 @@ import java.io.FileNotFoundException
  * back a raw MediaStore URI instead.
  *
  * One real limitation, also discovered from that same source read:
- * file_picker never calls takePersistableUriPermission on the picked URI,
- * so the one-time grant from the original pick can already be gone by the
- * time the user taps Delete -- most likely across an app restart, less
- * likely within the same session. That surfaces as a SecurityException,
- * reported back as the distinct "permission_denied" error code rather than
- * silently claiming success.
+ * file_picker never calls takePersistableUriPermission on the picked URI.
+ * The grant it gets from ACTION_OPEN_DOCUMENT is transient by default --
+ * per Android's own docs, that lasts only until the app's process is
+ * killed, not just an explicit force-quit. Confirmed for real during the
+ * M7 ten-video run: all ten uploads survived a background process death
+ * mid-batch (M4's resume logic re-reads everything from disk/db), but every
+ * one of them then failed Delete with permission_denied -- the transient
+ * URI grants didn't survive that same death. "persistAccess" below exists
+ * to close that gap going forward: called once at pick time, before
+ * hashing/uploading even starts, so the grant is upgraded to a persistable
+ * one while it's still definitely fresh. A pick made before this existed
+ * has no persisted grant to fall back on -- deleting those from the app
+ * will keep failing; the file itself is still safe (already archived), it
+ * just has to be removed manually if wanted.
  */
 class MainActivity : FlutterActivity() {
+    private val tag = "NightshiftDelete"
     private val channelName = "nightshift/delete"
     private val deleteRequestCode = 4271
 
@@ -58,29 +68,64 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
-                if (call.method != "delete") {
-                    result.notImplemented()
-                    return@setMethodCallHandler
-                }
                 val uriString = call.argument<String>("uri")
                 if (uriString == null) {
                     result.error("bad_args", "uri is required", null)
                     return@setMethodCallHandler
                 }
-                deleteUri(Uri.parse(uriString), result)
+                when (call.method) {
+                    "delete" -> deleteUri(Uri.parse(uriString), result)
+                    "persistAccess" -> persistAccess(Uri.parse(uriString), result)
+                    else -> result.notImplemented()
+                }
             }
     }
 
+    /// Best-effort: upgrades the transient read/write grant from the
+    /// original pick into one that survives process death and device
+    /// reboots. Not every DocumentsProvider grants write access by default
+    /// (some only read) -- tries read+write first, falls back to read-only
+    /// so at least future GET /offset-style read access survives even if
+    /// delete itself won't work without a fresh pick.
+    private fun persistAccess(uri: Uri, result: MethodChannel.Result) {
+        Log.d(tag, "persistAccess: uri=$uri isDocumentUri=${DocumentsContract.isDocumentUri(this, uri)}")
+        val readWrite = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        try {
+            contentResolver.takePersistableUriPermission(uri, readWrite)
+            Log.d(tag, "persistAccess: granted read+write for $uri")
+            result.success(true)
+            return
+        } catch (e: SecurityException) {
+            Log.w(tag, "persistAccess: read+write denied for $uri: ${e.message}")
+        }
+        try {
+            contentResolver.takePersistableUriPermission(
+                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+            Log.d(tag, "persistAccess: granted read-only for $uri")
+            result.success(true)
+        } catch (e: SecurityException) {
+            Log.w(tag, "persistAccess: read-only also denied for $uri: ${e.message}")
+            result.success(false)
+        }
+    }
+
     private fun deleteUri(uri: Uri, result: MethodChannel.Result) {
-        if (DocumentsContract.isDocumentUri(this, uri)) {
+        val isDoc = DocumentsContract.isDocumentUri(this, uri)
+        Log.d(tag, "deleteUri: uri=$uri isDocumentUri=$isDoc")
+        if (isDoc) {
             try {
                 val deleted = DocumentsContract.deleteDocument(contentResolver, uri)
+                Log.d(tag, "deleteUri: deleteDocument returned $deleted for $uri")
                 result.success(deleted)
             } catch (e: FileNotFoundException) {
                 // Already gone -- deleted elsewhere, or a previous attempt
                 // actually succeeded but the app died before recording it.
+                Log.d(tag, "deleteUri: $uri already gone (FileNotFoundException)")
                 result.success(true)
             } catch (e: SecurityException) {
+                Log.w(tag, "deleteUri: permission denied for $uri: ${e.message}")
                 result.error(
                     "permission_denied",
                     "No permission to delete -- the pick's access grant expired",

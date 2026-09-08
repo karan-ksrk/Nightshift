@@ -12,11 +12,18 @@ class ProgressRow extends StatelessWidget {
   /// VERIFIED (YouTube-processing) stage.
   final VoidCallback onDelete;
 
+  /// Local-only "remove from list" -- doesn't touch the phone file, the Pi,
+  /// or the row itself. Available on any row via long-press, mainly for
+  /// rows the Delete button can never resolve (a pick made before
+  /// persistAccess existed, whose grant is permanently gone).
+  final VoidCallback onHide;
+
   const ProgressRow({
     super.key,
     required this.row,
     required this.onRetry,
     required this.onDelete,
+    required this.onHide,
   });
 
   @override
@@ -26,6 +33,7 @@ class ProgressRow extends StatelessWidget {
     final sizeMb = (row.sizeBytes / 1e6).toStringAsFixed(1);
 
     return ListTile(
+      onLongPress: onHide,
       title: Text(row.filename, overflow: TextOverflow.ellipsis),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

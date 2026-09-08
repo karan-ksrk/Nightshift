@@ -7,7 +7,7 @@
 /// createUploadsTableSql itself for an already-shipped version).
 library;
 
-const int schemaVersion = 1;
+const int schemaVersion = 2;
 
 /// sha256 is nullable and UNIQUE, not NOT NULL UNIQUE: a row is inserted
 /// the moment a file is picked (state=PENDING), before hashing has run.
@@ -34,9 +34,19 @@ CREATE TABLE IF NOT EXISTS uploads (
   attempts          INTEGER NOT NULL DEFAULT 0,
   last_error        TEXT,
   confirmed_at      TEXT,
-  deleted_at        TEXT
+  deleted_at        TEXT,
+  hidden_from_list  INTEGER NOT NULL DEFAULT 0
 )
 ''';
 
 const String createStateIndexSql =
     'CREATE INDEX IF NOT EXISTS idx_uploads_state ON uploads(state)';
+
+/// v2: local-only "remove from list" (see UploadsDao.hideFromList) for rows
+/// stuck showing a Delete button that can never succeed -- most commonly a
+/// pick made before persistAccess existed, whose transient SAF grant is
+/// permanently gone. This never touches the phone file or the Pi; it just
+/// keeps the manifest row (per this app's own "rows never deleted"
+/// convention, matching db.py) out of the default list view.
+const String alterAddHiddenFromListSql =
+    'ALTER TABLE uploads ADD COLUMN hidden_from_list INTEGER NOT NULL DEFAULT 0';

@@ -115,12 +115,19 @@ class _UploadScreenState extends State<UploadScreen> {
       for (final f in result.files) {
         final path = f.path;
         if (path == null) continue; // shouldn't happen for FileType.video
+        // f.identifier is the original content:// URI on Android (SAF
+        // picks), not the cache-copy path -- needed later for M6's manual
+        // delete, which has to target the real document, not the cache
+        // copy this app reads bytes from.
+        final uri = f.identifier ?? path;
+        // Right now, before anything else -- the transient grant from the
+        // pick is at its freshest here. Upgraded to a persistable one so
+        // Delete still works even after the app's process gets killed in
+        // the background mid-upload, which a large batch gives Android
+        // plenty of time to do (confirmed for real during M7).
+        await _mediaDeleteChannel.persistAccess(uri);
         final id = await _dao.insertPending(
-          // f.identifier is the original content:// URI on Android (SAF
-          // picks), not the cache-copy path -- needed later for M6's
-          // manual delete, which has to target the real document, not the
-          // cache copy this app reads bytes from.
-          localUri: f.identifier ?? path,
+          localUri: uri,
           localPath: path,
           filename: f.name,
           sizeBytes: f.size,
@@ -208,17 +215,59 @@ class _UploadScreenState extends State<UploadScreen> {
       }
     } on PlatformException catch (e) {
       if (!mounted) return;
-      final message = e.code == 'permission_denied'
-          ? "Can't delete automatically -- permission expired. Remove it "
-              'manually from your Files app.'
-          : 'Delete failed: ${e.message}';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+      if (e.code == 'permission_denied') {
+        // Nothing left to retry automatically -- offer to at least get it
+        // out of the list, right where the failure happened.
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: const Text(
+            "Can't delete automatically -- permission expired. Remove it "
+            'manually from your Files app if you want it gone.',
+          ),
+          action: SnackBarAction(label: 'Remove from list', onPressed: () => _hide(row)),
+          duration: const Duration(seconds: 6),
+        ));
+      } else {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Delete failed: ${e.message}')));
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
       }
     }
+  }
+
+  /// Local-only: drops the row out of view without touching the phone file,
+  /// the Pi, or the row itself (see UploadsDao.hideFromList). Reachable via
+  /// long-press on any row, or directly from the permission_denied SnackBar
+  /// above.
+  Future<void> _hide(LocalUpload row) async {
+    if (row.id == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove from list?'),
+        content: Text(
+          '${row.filename}\n\n'
+          "This only removes it from this app's list -- it doesn't touch "
+          'the file on your phone or the Pi.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _dao.hideFromList(row.id!);
+    if (mounted) setState(() => _rows.remove(row.id));
   }
 
   @override
@@ -248,6 +297,7 @@ class _UploadScreenState extends State<UploadScreen> {
                   row: row,
                   onRetry: () => _retry(row.id!),
                   onDelete: () => _delete(row),
+                  onHide: () => _hide(row),
                 );
               },
             ),

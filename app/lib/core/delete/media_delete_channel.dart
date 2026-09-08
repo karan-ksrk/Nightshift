@@ -23,4 +23,22 @@ class MediaDeleteChannel {
     final result = await _channel.invokeMethod<bool>('delete', {'uri': uri});
     return result ?? false;
   }
+
+  /// Call once, right after picking, before hashing/uploading even starts.
+  /// Upgrades file_picker's transient SAF read/write grant into one that
+  /// survives the app's own process being killed in the background --
+  /// which a multi-hundred-MB upload batch gives Android plenty of time to
+  /// do, confirmed for real during the M7 run: uploads survived that kind
+  /// of restart via the resume logic, but Delete failed afterward on every
+  /// file picked before this existed, since the transient grant didn't
+  /// survive it. Best-effort and silent on failure -- not every
+  /// DocumentsProvider supports persisting, and this must never block or
+  /// fail the pick/upload flow either way.
+  Future<void> persistAccess(String uri) async {
+    try {
+      await _channel.invokeMethod<bool>('persistAccess', {'uri': uri});
+    } catch (_) {
+      // Best-effort only -- the pick/upload continues regardless.
+    }
+  }
 }
