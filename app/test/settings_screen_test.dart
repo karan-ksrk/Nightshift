@@ -1,13 +1,13 @@
-// Smoke test for the Settings screen (M1): fields render, and the Save
-// button stays disabled until host/port/token all look filled in --
-// _fieldsLookValid gating actually works, not just visually present.
+// Smoke test for the Settings screen: fields render, and Save stays
+// disabled until host/port/token all look filled in -- _fieldsLookValid
+// gating actually works, not just visually present.
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:nightshift_app/main.dart';
+import 'package:nightshift_app/screens/settings/settings_screen.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -43,8 +43,10 @@ void main() {
         .setMockMethodCallHandler(channel, null);
   });
 
+  Widget wrap(Widget child) => MaterialApp(home: child);
+
   testWidgets('Settings screen renders host/port/token fields', (tester) async {
-    await tester.pumpWidget(const NightshiftApp());
+    await tester.pumpWidget(wrap(const SettingsScreen()));
     await tester.pumpAndSettle();
 
     expect(find.text('Host'), findsOneWidget);
@@ -54,7 +56,7 @@ void main() {
   });
 
   testWidgets('Save is disabled until host/port/token are all filled', (tester) async {
-    await tester.pumpWidget(const NightshiftApp());
+    await tester.pumpWidget(wrap(const SettingsScreen()));
     await tester.pumpAndSettle();
 
     final saveButton = tester.widget<FilledButton>(find.byType(FilledButton));

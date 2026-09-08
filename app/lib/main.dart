@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'screens/settings/settings_screen.dart';
+import 'screens/upload/upload_screen.dart';
 
 void main() {
   runApp(const NightshiftApp());
@@ -17,9 +17,9 @@ class NightshiftApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
       ),
-      // M1: Settings is the only screen. Upload/Status get added and this
-      // becomes a bottom-nav shell in later milestones.
-      home: const SettingsScreen(),
+      // M3: Upload is home, Settings reachable via its AppBar action. The
+      // Status screen (M5) turns this into a bottom-nav shell.
+      home: UploadScreen(),
     );
   }
 }

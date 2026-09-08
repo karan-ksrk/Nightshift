@@ -42,6 +42,8 @@ dependencies:
   provider: ^6.1.2                 # sharing upload/status state across screens
   sqflite: ^2.4.1                  # local uploads mirror -- hand-written SQL, no ORM
   path: ^1.9.0                     # join() for the db file path
+  file_picker: ^8.3.7              # arbitrary-folder video picking, not just gallery
+  crypto: ^3.0.6                   # sha256, pure Dart, streamed in an isolate
 
 dev_dependencies:
   flutter_test:
@@ -58,6 +60,18 @@ dev_dependencies:
   # provides a databaseFactory that runs SQLite natively instead of over a
   # platform channel.
   sqflite_common_ffi: ^2.3.4
+
+# file_picker 8.3.7 accepts flutter_plugin_android_lifecycle ^2.0.22, but
+# pub resolves that to the newest matching release (2.0.35), whose AAR
+# requires compiling against Android SDK 36+ -- while file_picker 8.3.7's
+# own AAR is compiled against SDK 34, so AGP's metadata check rejects the
+# pairing outright ("update this project to use compileSdk of at least
+# 36" -- except our compileSdk already IS 36; the real conflict is between
+# these two plugins' AARs, not our own project settings). Pinning to
+# file_picker's stated minimum sidesteps a plugin whose newer patch
+# releases moved ahead of what file_picker 8.x actually needs.
+dependency_overrides:
+  flutter_plugin_android_lifecycle: 2.0.22
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
