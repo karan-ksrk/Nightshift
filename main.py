@@ -299,8 +299,15 @@ def cmd_run(cfg, conn, args):
 def upload_one(cfg, conn, yt, f, chunk, rate, start, end, enforce_window):
     path = Path(f["path"])
     if not path.exists():
-        conn.set_state(f["id"], FAILED)
+        # Not being on disk right now is not a permanent property of the
+        # content -- the drive may be unmounted, the file still copying, or
+        # the archive mid-migration to another machine. So record it and
+        # leave the row QUEUED to retry, rather than sinking it into FAILED,
+        # which nothing walks back. A file that really is gone for good just
+        # logs this every night, which is what you'd want to see anyway.
         conn.note_error(f["id"], "file missing at upload time")
+        log.warning("%s not on disk at %s -- leaving QUEUED to retry",
+                     f["filename"], path)
         return
 
     title = path.stem[:100]

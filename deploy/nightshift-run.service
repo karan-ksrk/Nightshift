@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightshift: scan, upload, verify, prune
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ksrk
+WorkingDirectory=/home/ksrk/nightshift
+ExecStart=/home/ksrk/nightshift/venv/bin/python main.py run

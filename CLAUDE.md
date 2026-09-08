@@ -63,6 +63,11 @@ them. Fatal on an unattended Pi. No verification needed — personal use under
 - State machine is forward-only:
   `QUEUED → UPLOADING → PROCESSING → VERIFIED → DELETED`, with `FAILED` as a
   sink. Retriable errors return a file to `QUEUED`.
+- **A file missing from disk is retriable, not fatal.** It stays `QUEUED` and
+  is retried on the next run. An unmounted drive, a file still copying, or an
+  archive mid-migration between machines are all transient — none of them are
+  a permanent property of the content, and `FAILED` is a sink nothing walks
+  back. A genuinely lost file just logs a warning every night.
 
 ## Conventions
 
