@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 import googleapiclient.errors
+import httplib2
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -168,4 +169,14 @@ def existing_video_ids(yt, video_ids):
 def is_retriable(exc):
     if isinstance(exc, googleapiclient.errors.HttpError):
         return exc.resp.status in RETRIABLE_STATUS
+    # DNS resolution failures come from httplib2 (the transport googleapiclient
+    # actually uses) as httplib2.ServerNotFoundError, "Unable to find the
+    # server at <host>" -- a subclass of HttpLib2Error/Exception, NOT of
+    # OSError, ConnectionError or socket.gaierror despite being exactly that
+    # class of transient network failure. Found the hard way: a DNS hiccup
+    # (here, a Tailscale MagicDNS blip -- resolv.conf points solely at
+    # 100.100.100.100 with no fallback) sank 7 files straight to FAILED after
+    # a single attempt each, when every one of them was retriable.
+    if isinstance(exc, httplib2.ServerNotFoundError):
+        return True
     return isinstance(exc, (ConnectionError, TimeoutError, OSError))

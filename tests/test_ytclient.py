@@ -6,7 +6,9 @@ where it matters -- in particular MediaUpload.chunksize is a *method*, which
 is what the throttle path got wrong and only failed on multi-chunk files.
 """
 
+import httplib2
 import pytest
+from googleapiclient.errors import HttpError
 
 import ytclient
 
@@ -202,3 +204,46 @@ def test_throttle_sleeps_by_chunksize_over_rate(monkeypatch):
     # 4 MB chunk at 1 MB/s = 4s target, minus ~0 elapsed in the fake.
     assert len(slept) == 1
     assert slept[0] == pytest.approx(4.0, abs=0.5)
+
+
+class FakeHttpResponse:
+    def __init__(self, status):
+        self.status = status
+        self.reason = "test"
+
+
+def test_is_retriable_dns_failure():
+    """httplib2.ServerNotFoundError -- "Unable to find the server at <host>" --
+    is what a DNS resolution failure actually raises through googleapiclient's
+    transport. It is a subclass of HttpLib2Error/Exception, NOT of OSError,
+    ConnectionError or socket.gaierror, despite being exactly the kind of
+    transient network blip the retry path exists for.
+
+    This shipped broken for real: a Tailscale MagicDNS hiccup sank 7 queued
+    files straight to the FAILED sink after one attempt each, none of them
+    actually unrecoverable -- DNS came back on its own minutes later.
+    """
+    exc = httplib2.ServerNotFoundError("Unable to find the server at youtube.googleapis.com")
+    assert ytclient.is_retriable(exc)
+
+
+def test_is_retriable_connection_and_timeout_errors():
+    assert ytclient.is_retriable(ConnectionError("connection reset"))
+    assert ytclient.is_retriable(TimeoutError("timed out"))
+    assert ytclient.is_retriable(OSError("network unreachable"))
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+def test_is_retriable_server_error_http_status(status):
+    exc = HttpError(FakeHttpResponse(status), b"", uri="https://youtube.googleapis.com/x")
+    assert ytclient.is_retriable(exc)
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+def test_is_retriable_client_error_http_status_is_not_retriable(status):
+    exc = HttpError(FakeHttpResponse(status), b"", uri="https://youtube.googleapis.com/x")
+    assert not ytclient.is_retriable(exc)
+
+
+def test_is_retriable_unrelated_exception_is_not_retriable():
+    assert not ytclient.is_retriable(ValueError("not a network problem"))

@@ -1,6 +1,8 @@
 google-api-python-client>=2.100.0
 google-auth-oauthlib>=1.1.0
 google-auth-httplib2>=0.1.1
+httplib2>=0.20.0               # imported directly in ytclient.py's is_retriable,
+                                # not just a transitive dep of the client libs above
 tzdata; sys_platform == "win32"
 
 pytest>=8.0.0
